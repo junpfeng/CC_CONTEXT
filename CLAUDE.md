@@ -1,15 +1,8 @@
 # 项目目录结构
 
-Workspace 级 monorepo，包含游戏服务器全部工程。
 
 | 目录 | 说明 | CLAUDE.md |
 |------|------|-----------|
-| `P1GoServer/` | 主业务工程（Go 游戏服务器） | `P1GoServer/CLAUDE.md` |
-| `server_old/` | 旧版服务器（Rust），目前仅 scene 进程在使用 | `server_old/CLAUDE.md` |
-| `config/` | 策划配置（自动生成，勿手动改） | `config/CLAUDE.md` |
-| `proto/` | 协议工程（Protocol Buffers） | `proto/CLAUDE.md` |
-| `tools/generate_tool/` | 代码生成器（配置/实体/协议解析） | — |
-| `docs/` | 项目文档（设计方案/经验总结/知识图谱/参考资料） | `docs/README.md` |
 
 > **按需加载规则**：仅在需要阅读或修改某个子工程时，才读取其 `CLAUDE.md`。不要一次性加载所有子工程的说明。
 
