@@ -9,7 +9,7 @@
 | `skills/perf-analyze/` | 代码性能分析与优化助手（瓶颈定位→热点优化→内存审查）— 用法：`/perf-analyze` |
 | `skills/wsl-env/` | WSL 环境管理助手（克隆、创建、删除、配置实例）— 用法：`/wsl-env` |
 | `skills/create-context/` | Claude Code 上下文文档生成与补充（CLAUDE.md / rules 自动生成）— 用法：`/create-context` |
-| `settings.local.json` | MCP 工具权限配置 |
+| `settings.local.example.json` | MCP 工具权限配置示例（复制为 `settings.local.json` 后按需修改） |
 
 ## 关联文档
 
@@ -19,5 +19,6 @@
 | [`docs/design/INDEX.md`](../docs/design/INDEX.md) | 设计方案索引 |
 | [`docs/knowledge/INDEX.md`](../docs/knowledge/INDEX.md) | 知识图谱索引 |
 | [`docs/reference/INDEX.md`](../docs/reference/INDEX.md) | 参考资料索引 |
+| [`docs/postmortem/INDEX.md`](../docs/postmortem/INDEX.md) | 经验总结索引 |
 
 > Skills 内部结构见各自 `SKILL.md`，按需加载，不在此展开。

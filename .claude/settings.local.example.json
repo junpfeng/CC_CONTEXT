@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(go test:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(gofmt:*)",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+      "Bash(curl:*)",
+      "Bash(env:*)",
+      "Bash(sh:*)",
+      "Bash(test:*)",
+      "Bash(lsof:*)",
+      "Bash(ss:*)",
+      "Bash(chmod:*)",
+      "Bash(md5sum:*)",
+      "mcp__ide__getDiagnostics"
+    ]
+  }
+}

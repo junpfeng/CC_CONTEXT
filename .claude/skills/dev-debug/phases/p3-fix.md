@@ -19,7 +19,7 @@
 
 ### 3.3 补充测试
 
-参照 `../dev-workflow/TEST.md` 的测试规范：
+参照项目测试规范（如有）：
 
 1. **复现测试**：编写能复现原始 bug 的测试用例（修复前应失败）
 2. **修复验证测试**：确认修复后测试通过
@@ -29,22 +29,19 @@
 ### 3.4 构建验证
 
 ```bash
-# 构建
-cd P1GoServer && make build
-
-# 运行测试
-cd P1GoServer && make test
-
-# 如果涉及特定包的测试
-cd P1GoServer && go test ./path/to/package/... -v -run TestXxx
+# 按项目构建说明执行（参照对应子工程 CLAUDE.md 中的构建命令）
+# 示例：
+# make build
+# make test
+# <语言特定的测试命令> ./path/to/package/... -v -run TestXxx
 ```
 
 ### 3.5 回归验证
 
 确保修复不引入新问题：
 
-- [ ] `make build` 构建通过
-- [ ] `make test` 全部测试通过
+- [ ] 构建通过
+- [ ] 全部测试通过
 - [ ] 相关模块的集成测试通过
 - [ ] 新增的复现测试通过
 
@@ -55,10 +52,10 @@ Bug 修复摘要：
 - 根因：[root cause]
 - 修复方案：[approach]
 - 修改文件：
-  * file1.go — [改动描述]
-  * file2.go — [改动描述]
+  * file1 — [改动描述]
+  * file2 — [改动描述]
 - 新增测试：
-  * test_file_test.go — TestXxx [测试描述]
+  * test_file — TestXxx [测试描述]
 - 构建验证：通过/失败
 - 测试验证：通过/失败
 ```

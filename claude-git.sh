@@ -203,9 +203,9 @@ claude-git — Claude 上下文文件版本控制
 
 示例:
   claude-git scan
-  claude-git add P1GoServer/CLAUDE.md
+  claude-git add <子工程>/CLAUDE.md
   claude-git add .claude/skills/dev-workflow/
-  claude-git commit -m "update BTree docs"
+  claude-git commit -m "update debug docs"
   claude-git log --oneline
   claude-git diff
 HELP

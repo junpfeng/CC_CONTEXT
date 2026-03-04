@@ -54,3 +54,15 @@ cp .claude/templates/sub-project-constitution.md.template server/.claude/rules/c
 所有模板中使用统一的 `<!-- TODO -->` 占位符格式，表示需要用户根据实际项目情况填写。
 
 占位符中通常包含示例内容作为参考，填写完成后请删除 `<!-- TODO -->` 注释标记。
+
+## 必选与可选说明
+
+| 章节/文件 | 必选/可选 | 说明 |
+|-----------|----------|------|
+| `CLAUDE.md` 项目目录结构 | 必选 | 子工程索引，Claude Code 导航的核心入口 |
+| `CLAUDE.md` 工作规范 | 必选 | 最小上下文原则等基础约定 |
+| `constitution.md` 禁止操作 | 必选 | 自动生成区域、安全规则等不可违反的约束 |
+| `constitution.md` 子工程索引 | 必选 | 与 CLAUDE.md 保持一致 |
+| 子工程 `CLAUDE.md` | 按需 | 有独立构建系统的子工程才需要 |
+| 子工程 `constitution.md` | 按需 | 有特定强制规则的子工程才需要 |
+| `docs/` 各子目录 | 可选 | 按项目需要选择性创建 |

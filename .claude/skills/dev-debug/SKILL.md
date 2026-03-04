@@ -9,18 +9,18 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 
 ---
 
-## 辅助文档
+## 领域知识扩展
 
-本 skill 复用 dev-workflow 的辅助文档，不重复创建：
+本 skill 提供通用的调试流程框架。如需针对特定项目的领域知识，请在项目中按需创建以下文档并在此引用：
 
-| 文档 | 引用路径 | 使用时机 |
-|------|----------|----------|
-| `DEBUG.md` | `../dev-workflow/DEBUG.md` | Phase 1 日志分析、Phase 2 日志定位 |
-| `TEST.md` | `../dev-workflow/TEST.md` | Phase 3 测试验证 |
-| `REVIEW.md` | `../dev-workflow/REVIEW.md` | Phase 3 修复审查 |
-| `NPC.md` | `../dev-workflow/NPC.md` | NPC 相关 bug |
-| `BTree.md` | `../dev-workflow/BTree.md` | 行为树相关 bug |
-| `DB.md` | `../dev-workflow/DB.md` | 数据库相关 bug |
+| 文档类型 | 建议路径 | 说明 |
+|----------|----------|------|
+| 调试指南 | `docs/knowledge/debug-guide.md` | 日志系统说明、进程列表、常见调试场景 |
+| 测试规范 | `docs/knowledge/test-guide.md` | 测试框架、测试命令、覆盖率要求 |
+| 代码审查 | `docs/knowledge/review-checklist.md` | 审查清单、常见问题检查项 |
+| 领域专项 | `docs/knowledge/<domain>.md` | 项目特定领域的调试知识（按需创建） |
+
+> 在调试过程中，如果 `project-model.md` 中引用了领域文档，按需读取对应文件。
 
 ---
 
@@ -28,14 +28,14 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 
 从 $ARGUMENTS 中解析用户输入，支持以下形式：
 
-- **Bug 描述文本**：自然语言描述的 bug 现象，如 `"NPC 移动后不播放动画"`
-- **日志片段**：包含错误日志的文本，如 `"E0217 12:47:12 [behavior_nodes.go:163] panic: nil pointer"`
+- **Bug 描述文本**：自然语言描述的 bug 现象，如 `"用户登录后页面空白"`
+- **日志片段**：包含错误日志的文本，如 `"E0217 12:47:12 [handler.go:163] panic: nil pointer"`
 - **截图路径**：错误截图的文件路径，如 `screenshots/bug-001.png`
 
 调用示例：
 ```
-/dev-debug NPC 在 meeting 状态下不移动
-/dev-debug E0217 12:47:12 [behavior_nodes.go:163] panic: nil pointer dereference
+/dev-debug 用户登录后页面空白
+/dev-debug E0217 12:47:12 [handler.go:163] panic: nil pointer dereference
 /dev-debug /tmp/error-screenshot.png
 ```
 

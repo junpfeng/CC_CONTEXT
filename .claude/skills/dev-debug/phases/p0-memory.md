@@ -5,9 +5,9 @@
 ### 0.1 提取搜索关键词
 
 从用户输入的 bug 描述中提取 2-3 个核心关键词：
-- 模块名（如 `BTree`、`NPC`、`Meeting`）
+- 模块名（如 `模块名`、`服务名`）
 - 错误类型（如 `panic`、`nil pointer`、`deadlock`）
-- 功能名（如 `MoveBehavior`、`DialogBehavior`）
+- 功能名（如 `功能名`、`接口名`）
 
 ### 0.2 搜索历史记忆
 
@@ -36,7 +36,7 @@ get_observations(ids=[<id1>, <id2>])
 
 除 claude-mem 外，还需查阅：
 - **Auto Memory**（`MEMORY.md`）中的"已知问题"章节
-- **DEBUG.md**（`../dev-workflow/DEBUG.md`）中的"常见调试场景"
+- **项目调试文档**（如有，参照 `project-model.md` 中的文档引用）
 
 ### 0.4 输出记忆摘要
 
