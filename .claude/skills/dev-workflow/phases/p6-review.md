@@ -1,17 +1,17 @@
 # Phase 6：产出审查
 
-> 领域依赖（必读）：`REVIEW.md`（审查规范+检查清单）、`TEST.md`（测试覆盖评估）
+> 领域依赖：无
 
 ## 第一步：4 Agent 并行审查
 
-同时启动 4 个 subagent，每个 subagent 先 Read `REVIEW.md` 获取详细检查清单：
+同时启动 4 个 subagent，每个 subagent 先查阅知识库中的审查规范获取详细检查清单：
 
 | Agent | 职责 |
 |-------|------|
 | **dev-workflow-code-reviewer** | 代码质量、Rules 合规、编码规范 |
 | **dev-workflow-security-reviewer** | 注入、凭证泄露、越权访问、跨工程安全边界 |
 | **dev-workflow-transaction-reviewer** | 验证顺序、回滚机制、锁/并发、幂等、超时、资源泄漏 |
-| **dev-workflow-test-designer** | 测试覆盖充分性（参考 TEST.md 评估要点） |
+| **dev-workflow-test-designer** | 测试覆盖充分性 |
 
 ## 第二步：综合审查
 
