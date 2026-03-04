@@ -78,16 +78,18 @@ cmd_add() {
     fi
 
     # 收集需要临时移走的 .git 目录（去重）
+    local nested_count=0
     declare -A git_dirs_to_move
     for path in "$@"; do
         local nested_git
         if nested_git=$(_find_nested_git "$path"); then
             git_dirs_to_move["$nested_git"]=1
+            nested_count=$((nested_count + 1))
         fi
     done
 
     # 如果没有嵌套 .git，直接添加（-f 绕过子项目 .gitignore）
-    if [[ ${#git_dirs_to_move[@]} -eq 0 ]]; then
+    if [[ $nested_count -eq 0 ]]; then
         _git add -f "$@"
         echo "已添加 $# 个路径"
         return 0
