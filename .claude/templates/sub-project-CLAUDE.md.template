@@ -1,0 +1,77 @@
+# 工程简介
+
+<!-- TODO: 填写子工程名称和简要描述，例如：
+GameServer —— 游戏服务端，负责游戏逻辑、玩家状态管理和实时通信。
+-->
+
+# 技术栈
+
+<!-- TODO: 列出本工程使用的主要技术栈，例如：
+- 语言：Go 1.21
+- 框架：Gin + gRPC
+- 数据库：PostgreSQL + Redis
+- 消息队列：NATS
+-->
+
+# 目录结构
+
+<!-- TODO: 描述本工程的核心目录结构，例如：
+```
+server/
+├── cmd/            # 入口文件
+├── internal/       # 内部模块（不对外暴露）
+│   ├── handler/    # 请求处理
+│   ├── service/    # 业务逻辑
+│   ├── repo/       # 数据访问
+│   └── model/      # 数据模型
+├── pkg/            # 可对外暴露的公共库
+├── config/         # 配置文件
+└── test/           # 集成测试
+```
+-->
+
+# 构建 / 测试 / 运行
+
+<!-- TODO: 填写本工程的常用命令，例如：
+```bash
+# 构建
+go build -o bin/server ./cmd/server
+
+# 运行
+./bin/server -config config/dev.yaml
+
+# 单元测试
+go test ./...
+
+# 集成测试
+go test -tags=integration ./test/...
+
+# 代码检查
+golangci-lint run
+```
+-->
+
+# 开发规范
+
+- 遵循工作空间宪法 → [`constitution.md`](../.claude/rules/constitution.md)
+- 本工程专属规则 → [`.claude/rules/constitution.md`](.claude/rules/constitution.md)
+
+<!-- TODO: 补充本工程特有的开发规范，例如：
+- API 接口必须先定义 proto/OpenAPI schema，再生成代码
+- 数据库变更必须通过 migration 文件，禁止手动修改表结构
+-->
+
+# 常见操作
+
+<!-- TODO: 补充本工程常见的开发操作，例如：
+## 添加新 API
+1. 在 `proto/` 中定义接口
+2. 运行 `make gen` 生成代码
+3. 在 `internal/handler/` 中实现处理函数
+4. 添加单元测试
+
+## 添加新配置项
+1. 在 `config/` 中添加字段
+2. 在 `internal/config/` 中更新结构体
+3. 更新文档
+-->

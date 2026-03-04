@@ -14,6 +14,7 @@ paths:
 - `**/generated/` — 代码生成产物
 - `go.sum` — 依赖锁定文件（由 go mod 管理）
 - `package-lock.json` — 依赖锁定文件（由 npm 管理）
+- `dist/` — 构建输出目录
 -->
 
 ## 工作流程
@@ -42,4 +43,5 @@ paths:
 |------|-----------|-----------|------|
 <!-- TODO: 添加子工程条目，格式示例：
 | `server` | [`CLAUDE.md`](../../server/CLAUDE.md) | `server/.claude/rules/` | 游戏服务端 |
+| `client` | [`CLAUDE.md`](../../client/CLAUDE.md) | `client/.claude/rules/` | 游戏客户端 |
 -->
