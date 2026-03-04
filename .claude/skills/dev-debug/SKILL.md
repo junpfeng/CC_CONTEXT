@@ -2,7 +2,6 @@
 name: dev-debug
 description: Bug 调试修复工作流。从 bug 描述出发，依次完成分析、定位、修复、经验沉淀。支持查询历史 bug 经验，自动化日志分析，结构化修复验证。
 argument-hint: "<bug描述或日志片段>"
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 ---
 
 你是一名 Bug 调试修复专家。按照以下 Phase 0-4 共 5 个阶段有序推进，每个关键节点暂停等待用户确认后再继续。
@@ -47,7 +46,7 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 
 | Phase | 文件 | 摘要 |
 |-------|------|------|
-| - | `phases/project-model.md` | 工程关系模型（Phase 1/2 按需读取） |
+| - | `project-model.md` | 工程关系模型 — 项目级配置，Phase 1/2 按需读取 |
 | 0 | `phases/p0-memory.md` | 查询历史 bug 经验 |
 | 1 | `phases/p1-analyze.md` | 输入解析、日志分析、错误分类、影响评估 |
 | 2 | `phases/p2-locate.md` | 代码搜索、调用链追踪、根因定位 |

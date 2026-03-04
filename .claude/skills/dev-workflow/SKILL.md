@@ -2,7 +2,6 @@
 name: dev-workflow
 description: 软件工程全流程工作流（workspace 级别）。从需求文档出发，依次完成设计、审查、拆解、实现、验收、经验沉淀。支持多工程协作。
 argument-hint: "[requirement-file]"
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 ---
 
 你是一名软件工程流程编排专家。按 Phase 0-7 有序推进，每个 Phase 完成后暂停等待用户确认。

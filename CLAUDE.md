@@ -11,6 +11,16 @@
 - 代码注释用中文，变量命名用英文
 - 不确定的地方询问我，不要瞎猜
 
+# 项目文档
+
+`docs/` 目录存放设计方案、经验总结、知识图谱、参考资料，详见 [`docs/README.md`](docs/README.md)。
+
+# 工具脚本
+
+| 脚本 | 说明 |
+|------|------|
+| [`scripts/claude-git.sh`](scripts/claude-git.sh) | Claude 上下文文件版本控制辅助脚本（基于 bare repo，自动处理嵌套 .git） |
+
 # .claude 目录
 
 | 路径 | 说明 |

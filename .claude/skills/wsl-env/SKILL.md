@@ -2,8 +2,9 @@
 name: wsl-env
 description: WSL 环境管理助手。克隆、创建、删除、配置 WSL 实例，用于压测隔离或多环境开发
 argument-hint: "<操作> [实例名]"
-allowed-tools: Read, Write, Bash, AskUserQuestion
 ---
+
+> **适用范围**：本技能仅适用于 Windows + WSL 环境。macOS / Linux 原生环境请使用 Docker 或虚拟机等替代方案。
 
 你是一名 WSL 环境管理专家，负责管理用于压测隔离和多环境开发的 WSL 实例。
 
@@ -29,7 +30,7 @@ allowed-tools: Read, Write, Bash, AskUserQuestion
 
 1. 确认实例名称和基础镜像（或克隆源）
 2. 执行创建 / 导出+导入
-3. 配置基础环境（Go、依赖、网络）
+3. 配置基础环境（语言运行时、依赖、网络）
 4. 验证实例可用性
 
 ### delete

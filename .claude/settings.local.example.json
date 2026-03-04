@@ -1,17 +1,10 @@
 {
   "permissions": {
     "allow": [
+      "// --- 通用工具 ---",
       "Bash(make:*)",
-      "Bash(go test:*)",
-      "Bash(go build:*)",
-      "Bash(go vet:*)",
       "Bash(ls:*)",
-      "Bash(find:*)",
-      "Bash(grep:*)",
       "Bash(wc:*)",
-      "Bash(gofmt:*)",
-      "Bash(git stash:*)",
-      "Bash(git checkout:*)",
       "Bash(curl:*)",
       "Bash(env:*)",
       "Bash(sh:*)",
@@ -20,6 +13,19 @@
       "Bash(ss:*)",
       "Bash(chmod:*)",
       "Bash(md5sum:*)",
+
+      "// --- Git ---",
+      "Bash(git stash:*)",
+      "Bash(git checkout:*)",
+
+      "// --- 构建/测试/lint（按项目语言取消注释） ---",
+      "// Go:    Bash(go test:*), Bash(go build:*), Bash(go vet:*), Bash(gofmt:*)",
+      "// Rust:  Bash(cargo build:*), Bash(cargo test:*), Bash(cargo clippy:*)",
+      "// Node:  Bash(npm run:*), Bash(npx:*), Bash(pnpm:*)",
+      "// Python: Bash(pytest:*), Bash(python:*), Bash(ruff:*), Bash(mypy:*)",
+      "// Java:  Bash(mvn:*), Bash(gradle:*)",
+
+      "// --- IDE 集成 ---",
       "mcp__ide__getDiagnostics"
     ]
   }

@@ -2,6 +2,12 @@
 
 本目录包含一套可复用的通用模板，用于在新项目中快速搭建 Claude Code 文档体系。
 
+## 模板与本项目的关系
+
+本项目（CC_CONTEXT）自身的 `CLAUDE.md` 和 `constitution.md` 即是基于这些模板创建的实例。模板中包含 `<!-- TODO -->` 占位符和更完整的章节结构（如"技术栈""快速命令"），而本项目的实际文件已根据自身需要裁剪了不适用的章节。
+
+使用模板时，应根据目标项目的实际情况选择保留或删除各章节，不必照搬所有内容。
+
 ## 文件清单
 
 | 文件 | 用途 |
@@ -61,6 +67,7 @@ cp .claude/templates/sub-project-constitution.md.template server/.claude/rules/c
 |-----------|----------|------|
 | `CLAUDE.md` 项目目录结构 | 必选 | 子工程索引，Claude Code 导航的核心入口 |
 | `CLAUDE.md` 工作规范 | 必选 | 最小上下文原则等基础约定 |
+| `CLAUDE.md` 技术栈 / 快速命令 | 可选 | 根据项目需要决定是否保留 |
 | `constitution.md` 禁止操作 | 必选 | 自动生成区域、安全规则等不可违反的约束 |
 | `constitution.md` 子工程索引 | 必选 | 与 CLAUDE.md 保持一致 |
 | 子工程 `CLAUDE.md` | 按需 | 有独立构建系统的子工程才需要 |

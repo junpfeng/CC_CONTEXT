@@ -2,7 +2,6 @@
 name: perf-analyze
 description: 代码性能分析与优化助手。当用户需要分析性能瓶颈、优化热点代码、审查内存分配、检查并发安全时使用
 argument-hint: "<函数名/文件路径/性能现象描述>"
-allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 ---
 
 你是一名代码性能分析与优化专家，支持多语言项目的性能问题诊断与优化。
@@ -29,14 +28,16 @@ allowed-tools: Read, Grep, Glob, Edit, Write, Bash, Task, AskUserQuestion
 
 ### Phase 2: 分析
 
-根据问题类型和项目语言选择分析手段：
+根据问题类型和项目语言选择分析手段。先识别项目使用的语言，再从下表中选取对应工具：
 
-| 类型 | 通用手段 | Go 特有 | 其他语言参考 |
-|------|----------|---------|-------------|
-| CPU 热点 | Profiler、火焰图 | `go tool pprof` | py: cProfile / perf; js: --prof; java: JFR |
-| 内存分配 | 内存分析器、分配追踪 | `go build -gcflags='-m'` 逃逸分析、heap profile | py: tracemalloc; java: MAT |
-| 并发安全 | 静态分析、竞态检测 | `go vet`、`-race` 检测 | py: ThreadSanitizer; java: FindBugs |
-| GC 压力 | 分配频率统计、对象生命周期分析 | `GODEBUG=gctrace=1` | JVM: -verbose:gc |
+| 类型 | 通用思路 | 常用工具（按语言） |
+|------|----------|-------------------|
+| CPU 热点 | Profiler 采样、火焰图 | Go: `go tool pprof` / Python: `cProfile`, `py-spy` / JS: `--prof`, Chrome DevTools / Java: JFR, async-profiler / Rust: `perf`, `flamegraph` |
+| 内存分配 | 分配追踪、泄漏检测 | Go: heap profile, `-gcflags='-m'` / Python: `tracemalloc` / JS: heap snapshot / Java: MAT, VisualVM / Rust: `valgrind`, DHAT |
+| 并发安全 | 竞态检测、静态分析 | Go: `-race`, `go vet` / Python: ThreadSanitizer / Java: FindBugs, SpotBugs / Rust: 编译器保证 + `miri` |
+| GC 压力 | 分配频率、对象生命周期 | Go: `GODEBUG=gctrace=1` / Java: `-verbose:gc`, G1 日志 / JS: `--expose-gc` / Python: `gc.set_debug` |
+
+> 表中工具仅作参考，实际应以项目技术栈和运行环境为准。
 
 ### Phase 3: 优化建议
 
