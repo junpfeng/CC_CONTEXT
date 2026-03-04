@@ -36,7 +36,7 @@ get_observations(ids=[<id1>, <id2>])
 
 除 claude-mem 外，还需查阅：
 - **Auto Memory**（`MEMORY.md`）中的"已知问题"章节
-- **项目调试文档**（如有，参照 `project-model.md` 中的文档引用）
+- **项目调试文档**（如有，参照项目 `CLAUDE.md` 或 `docs/knowledge/` 目录下的文档）
 
 ### 0.4 输出记忆摘要
 

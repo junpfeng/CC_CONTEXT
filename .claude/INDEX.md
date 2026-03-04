@@ -3,6 +3,7 @@
 | 路径 | 说明 |
 |------|------|
 | `rules/constitution.md` | 工作空间宪法（最高优先级规则） |
+| `rules/evolution.md` | 文档持续演进规则 |
 | `templates/` | 通用文档模板套件，用于新项目快速搭建 Claude Code 文档体系 -> [`README.md`](templates/README.md) |
 | `skills/dev-workflow/` | 软件工程全流程工作流（需求->设计->实现->验收）— 用法：`/dev-workflow` |
 | `skills/dev-debug/` | Bug 调试修复工作流（分析->定位->修复->沉淀）— 用法：`/dev-debug` |
@@ -23,9 +24,9 @@
 
 | 路径 | 说明 |
 |------|------|
-| [`docs/README.md`](../docs/README.md) | 项目文档总入口（设计、知识图谱、参考资料、经验总结） |
+| [`docs/README.md`](../docs/README.md) | 项目文档总入口（设计、工程领域知识、参考资料、经验总结） |
 | [`docs/design/INDEX.md`](../docs/design/INDEX.md) | 设计方案索引 |
-| [`docs/knowledge/INDEX.md`](../docs/knowledge/INDEX.md) | 知识图谱索引 |
+| [`docs/knowledge/INDEX.md`](../docs/knowledge/INDEX.md) | 工程领域知识索引 |
 | [`docs/reference/INDEX.md`](../docs/reference/INDEX.md) | 参考资料索引 |
 | [`docs/postmortem/INDEX.md`](../docs/postmortem/INDEX.md) | 经验总结索引 |
 

@@ -13,7 +13,7 @@
 
 # 项目文档
 
-`docs/` 目录存放设计方案、经验总结、知识图谱、参考资料，详见 [`docs/README.md`](docs/README.md)。
+`docs/` 目录存放设计方案、经验总结、工程领域知识、参考资料，详见 [`docs/README.md`](docs/README.md)。
 
 # 工具脚本
 

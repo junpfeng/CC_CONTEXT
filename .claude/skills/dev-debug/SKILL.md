@@ -19,7 +19,7 @@ argument-hint: "<bug描述或日志片段>"
 | 代码审查 | `docs/knowledge/review-checklist.md` | 审查清单、常见问题检查项 |
 | 领域专项 | `docs/knowledge/<domain>.md` | 项目特定领域的调试知识（按需创建） |
 
-> 在调试过程中，如果 `project-model.md` 中引用了领域文档，按需读取对应文件。
+> 在调试过程中，如果项目中存在上述领域文档，按需读取对应文件。
 
 ---
 
@@ -46,7 +46,6 @@ argument-hint: "<bug描述或日志片段>"
 
 | Phase | 文件 | 摘要 |
 |-------|------|------|
-| - | `project-model.md` | 工程关系模型 — 项目级配置，Phase 1/2 按需读取 |
 | 0 | `phases/p0-memory.md` | 查询历史 bug 经验 |
 | 1 | `phases/p1-analyze.md` | 输入解析、日志分析、错误分类、影响评估 |
 | 2 | `phases/p2-locate.md` | 代码搜索、调用链追踪、根因定位 |
