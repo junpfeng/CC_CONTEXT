@@ -1,0 +1,40 @@
+{
+  "version": "0.0.4",
+  "feature": "BigWorld_NPC",
+  "title": "大世界NPC系统升级（参考小镇V2）",
+  "description": "将当前极简的大世界NPC（6组件/4状态）升级为接近小镇V2水准的完整NPC系统，支持情绪、日程、社交反应、多NPC类型，同时满足手游AOI大量NPC的性能预算。",
+  "background": {
+    "current_bigworld": {
+      "client_comps": ["AnimationComp", "AppearanceComp", "EmotionComp", "FsmComp", "MoveComp", "TransformComp"],
+      "client_states": ["Idle", "Move", "Scenario", "Emotion"],
+      "server": "V2正交管线（v2brain + PlanExecutor + NpcMoveSystem），BtTickSystem未注册，AI不tick"
+    },
+    "town_v2_reference": {
+      "client_comps_count": 18,
+      "client_states_count": 19,
+      "server": "V2Brain决策引擎（表达式条件、Plan切换）+ ScheduleComp + TownNpcComp"
+    }
+  },
+  "goals": [
+    "P0: 服务端V2Brain决策引擎接入大世界NPC，实现日程系统驱动（时间→路点）",
+    "P0: 客户端状态机扩展到8+状态（增加Run/Turn/Flee/Nervous等情绪状态）",
+    "P0: BtTickSystem在大世界场景注册，AI管线正常tick",
+    "P1: 情绪系统完整移植（害怕/紧张/好奇/愤怒四类，对应小镇的FleeComp/ReactComp/GawkComp）",
+    "P1: 多NPC类型支持（行人/商贩/警察/动物，每类有独立行为配置）",
+    "P1: LOD分级（AOI距离决定tick频率和动画精度，远处NPC简化表现）",
+    "P2: 社交互动（打电话/围观/对话，参考TownNpcPhoneComp/AngryComp/GawkComp）",
+    "P2: 警察NPC专属系统（视野检测、追捕行为，参考TownNpcPoliceComp）"
+  ],
+  "constraints": [
+    "手游性能：AOI范围内可能同时存在50+NPC，tick频率须按LOD降低",
+    "服务器权威：所有行为决策在服务端，客户端仅表现",
+    "优先复用：小镇V2已有的System/Brain/Schedule直接复用，不重复造轮子",
+    "独立隔离：大世界NPC配置须与小镇完全隔离（V2前缀或BigWorld前缀）"
+  ],
+  "reference": {
+    "town_client": "freelifeclient/Assets/Scripts/Gameplay/Modules/S1Town/Entity/NPC/",
+    "town_server": "P1GoServer/servers/scene_server/internal/common/ai/decision/v2brain/",
+    "bigworld_client": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/",
+    "bigworld_server": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/"
+  }
+}

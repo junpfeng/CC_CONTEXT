@@ -1,0 +1,1 @@
+{"csharpCode":"using UnityEngine;\nusing FL.NetModule;\npublic class Script {\n    public static object Main() {\n        var req = new GMOperateReq();\n        req.OperateCmd = \"/ke* gm feed_animal\";\n        NetCmd.GmOperate(req);\n        return \"feed_animal sent\";\n    }\n}"}

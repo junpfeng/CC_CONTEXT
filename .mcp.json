@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "excel": {
+      "command": "cmd",
+      "args": ["/c", "npx", "--yes", "@negokaz/excel-mcp-server"]
+    },
+    "ai-game-developer": {
+      "type": "http",
+      "url": "http://localhost:8080"
+    }
+  }
+}

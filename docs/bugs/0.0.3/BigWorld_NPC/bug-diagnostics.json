@@ -1,0 +1,43 @@
+{
+  "screenshots": [],
+  "logs": {
+    "unity_console": "NPC face animation clip warnings (non-blocking), BoneModification NullRef (unrelated). No NPC removal errors.",
+    "server_log": "Not checked (server running, no crash logs)"
+  },
+  "mcp_state": {
+    "editor_state": "Unknown (Game View not visible)",
+    "gameobjects_checked": []
+  },
+  "runtime_data": {
+    "npc_spawn_config": {
+      "max_count": 100,
+      "spawn_radius": 200.0,
+      "despawn_radius": 300.0,
+      "despawn_delay": 3.0,
+      "spawn_batch_size": 5
+    },
+    "zone_quota_config": {
+      "totalNpcBudget": 200,
+      "recycleHysteresis": 5,
+      "quotaInterval": 5.0,
+      "zones_count": 5,
+      "zone_maxNpc_range": "20-30"
+    },
+    "aoi_grid_cell_size": 128,
+    "aoi_nine_grid_range_approx": "192-256m"
+  },
+  "code_analysis": {
+    "root_cause_file": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_npc_spawner.go",
+    "root_cause_lines": "541-548",
+    "root_cause_description": "doDespawn() quota surplus branch marks ALL NPCs in zone for removal regardless of distance to player. No minimum safe radius guard. Combined with Go map random iteration in despawn loop (line 568-579), nearby NPCs may be removed before farther ones.",
+    "contributing_factor": "lastQuotaResults only refreshes every 5s (quotaInterval), so stale surplus persists even after enough NPCs removed to resolve deficit. Over-removal possible within the 5s window.",
+    "fix_direction": "Add minimum distance guard (e.g., spawn_radius=200m) in quota surplus branch: skip marking for NPCs within safe radius of any player. Optionally sort pendingDespawn by distance (farthest first)."
+  },
+  "collection_timestamp": "2026-03-30T20:30:00+08:00",
+  "source_timestamps": {
+    "unity_console": "2026-03-30T20:24:00+08:00",
+    "server_log": "2026-03-30T20:24:00+08:00",
+    "editor_state": "2026-03-30T20:24:00+08:00",
+    "screenshots": "N/A"
+  }
+}

@@ -1,0 +1,114 @@
+
+══════════════════════════════════════
+  Bug Fix 自动闭环流程
+  模式: single
+  版本: 0.0.2
+  模块: V2_NPC
+  最大迭代轮次: 10
+══════════════════════════════════════
+发现 1 个未修复 Bug
+
+────────────────────────────────────
+  Bug #1: 大世界看不到任何NPC，点击小地图中NPC的图例也没有在小地图中显示NPC的位置
+────────────────────────────────────
+  [阶段零-A] 客户端运行时错误诊断...
+  [诊断] 收集客户端错误信息...
+  [诊断] Editor.log 发现错误/异常记录
+  [诊断] 尝试通过 Unity MCP 读取 Console...
+  [阶段一] 根因分析...
+### 证据对比
+
+| 实体类型 | 文件 | AnimStateComp |
+|---------|------|--------------|
+| 动物 | `animal_init.go:112` | ✅ `entity.AddComponent(csystem.NewAnimStateComp())` |
+| BigWorld NPC | `scene_npc_mgr.go:331-388` | ❌ **缺失** |
+
+### 修复
+
+在 `CreateDynamicBigWorldNpc` 的 NpcMoveComp 挂载后加一行：
+```go
+entity.AddComponent(csystem.NewAnimStateComp())
+```
+
+客户端无需任何修改。
+  [阶段一] 根因分析完成 (754s)
+  [阶段二] 进入修复迭代循环 (最大 10 轮)...
+
+  ── 轮次 1 / 10 ──
+  [Fix] 实施修复（基于根因分析）...
+修复完成。
+
+## 修复摘要
+
+**根因**：`CreateDynamicBigWorldNpc` 创建 BigWorld NPC 实体时漏挂 `AnimStateComp`，导致帧同步中 `AnimStateInfo=nil`，客户端 `BigWorldNpcManager.SyncWithDataManager` 因 `ServerAnimStateData==null` 过滤所有 NPC，大世界无任何 NPC 渲染，小地图图例也因找不到 NPC 实体而立即自删。
+
+**修改了 2 个文件**：
+1. `scene_npc_mgr.go` — 补 `csystem` import，在 `CreateDynamicBigWorldNpc` 中添加 `entity.AddComponent(csystem.NewAnimStateComp())`（核心修复）
+2. `bt_tick_system.go` — `syncNpcStateToAnimComp` 静默 return 处补 `log.Warningf`（防御性日志，防止今后同类问题被掩盖）
+
+**`make build` 编译通过**，客户端无需修改。
+  [Ralph] 已确认所有文件修复完成
+  [编译验证] ...
+  [编译] 服务端编译验证...
+  [编译] 服务端编译通过
+  [测试] 服务端单元测试...
+  [测试] 服务端测试通过
+  [编译] 客户端编译验证...
+  WARNING: Editor.log 发现 72 条编译错误
+  NOTICE: Unity MCP 不可用
+  客户端编译错误: 72 条
+  [修复] 自动修复 client 错误...
+后台任务已停止，无影响。
+  [编译] 第 1 次编译修复后仍有错误，重试...
+  [编译] 服务端编译验证...
+  [编译] 服务端编译通过
+  [测试] 服务端单元测试...
+  [测试] 服务端测试通过
+  [编译] 客户端编译验证...
+  NOTICE: Unity MCP 不可用
+  [编译] 客户端编译通过
+  [编译] 全部编译验证通过
+
+  ── 轮次 2 / 10 ──
+  [Review] 审查修复质量...
+Review 完成，报告已写入 `docs/bugs/0.0.2/V2_NPC_fix-review-report.md`。
+
+**结论：通过**（CRITICAL=0, HIGH=1, MEDIUM=0）
+
+核心发现：
+
+- **根因修复正确** — `scene_npc_mgr.go:359` 正确添加了 `AnimStateComp`，import 完整，注释清晰，并补充了 entity 孤儿泄漏的回滚防护
+- **根因 B 自动解决** — 小地图图例自删问题随 AnimStateComp 修复级联解决；`BigWorldNpcFsmComp.cs` 扩展的 17 种状态映射确保新推送的状态客户端有对应处理路径
+- **HIGH × 1** — 提交混合了核心 Bug 修复与大量新功能（配额驱动 Spawner、GM 命令、小地图图例完整实现），本次已提交无需返工，但后续建议拆分 `fix` 和 `feat` 提交
+- **无 CRITICAL** — Config/Gen 文件均为工具自动生成（有标准文件头），SetMoveTarget 删除零调用者，新增 Go 文件日志格式合规
+  Review 结果: Critical=0, High=1, Medium=0
+  PASS: 质量达标 (Critical=0, High<=2)
+  [阶段二] 修复迭代完成: 质量达标
+  [阶段三] 经验固化 + 文档更新...
+### 固化：
+需要固化，但 `P1GoServer/.claude/rules/ecs-architecture.md` 编辑权限被系统拦截（两次均失败）。
+
+待固化内容：**BigWorld NPC 实体创建必须挂载 `AnimStateComp`**（客户端以 `ServerAnimStateData!=nil` 判断 V2 NPC；`syncNpcStateToAnimComp` 缺失时静默 return 无日志，问题极隐蔽）。
+
+请手动授权后重试，或手动添加到 `P1GoServer/.claude/rules/ecs-architecture.md`：
+
+```markdown
+## BigWorld NPC 实体创建必备组件
+
+**问题**：创建 BigWorld NPC 实体时遗漏 `AnimStateComp`，导致大世界无 NPC 可见。
+**原因**：`syncNpcStateToAnimComp` 缺失组件时静默 return，无日志，问题被掩盖。
+**正确做法**：BigWorld NPC 必须挂载 NpcMoveComp + AnimStateComp + SceneNpcComp 三件套。
+**错误做法**：参照 CreateSimpleNpc 漏挂 AnimStateComp。
+```
+  [阶段四] 提交修复到 Git...
+  [阶段四] 无变更需要提交
+  [完成] Bug #1 修复流程结束: 质量达标
+
+══════════════════════════════════════
+  修复完成: 0.0.2/V2_NPC
+══════════════════════════════════════
+  总 Bug: 1
+  已修复: 1
+  失败: 0
+  总耗时: 2424s
+══════════════════════════════════════

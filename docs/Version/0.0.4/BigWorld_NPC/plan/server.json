@@ -1,0 +1,159 @@
+{
+  "server_design": {
+    "data_models": [
+      {
+        "name": "BigWorldNpcBehaviorComp",
+        "storage": "memory",
+        "description": "大世界NPC行为状态（V2Brain决策引擎的状态容器）",
+        "fields": [
+          {"name": "EmotionState", "type": "int32", "description": "当前情绪：0=None,1=Scared,2=Nervous,3=Curious,4=Angry"},
+          {"name": "MoodLevel", "type": "float32", "description": "情绪强度[0,1]，每秒衰减"},
+          {"name": "ReactType", "type": "int32", "description": "触发情绪的事件类型（枪声/爆炸/碰撞）"},
+          {"name": "FleeAttrFlags", "type": "uint32", "description": "逃跑方向编码（位掩码）"},
+          {"name": "ScheduleWaypointId", "type": "int32", "description": "当前日程目标路点ID"},
+          {"name": "CurrentPlanId", "type": "string", "description": "当前V2Brain Plan名称"},
+          {"name": "EmotionDecayTimer", "type": "float32", "description": "情绪衰减计时器（秒）"}
+        ]
+      },
+      {
+        "name": "BigWorldNpcBrainConfig（JSON）",
+        "storage": "memory",
+        "description": "bin/config/bigworld_npc_brain.json，V2Brain Plan配置。[迭代3修复 I4] 补充完整结构示例，不再仅依赖'阅读Town配置'",
+        "reference_file": "P1GoServer/bin/config/bigworld_npc/（与bigworld_npc_spawn.json同目录）。实现前先grep 'npc_brain' 找到Town侧参考文件确认字段名，再用以下schema编写",
+        "schema_example": {
+          "note": "以下为WanderPlan示例，SchedulePlan/FleePlan同结构",
+          "plans": [
+            {
+              "id": "WanderPlan",
+              "priority": 0,
+              "conditions": [],
+              "actions": [{"type": "SetNpcState", "npc_state": 0}]
+            },
+            {
+              "id": "SchedulePlan",
+              "priority": 10,
+              "conditions": [{"field": "schedule_waypoint_id", "op": ">", "value": 0}],
+              "actions": [{"type": "SetNpcState", "npc_state": 1}, {"type": "MoveToWaypoint"}]
+            },
+            {
+              "id": "FleePlan",
+              "priority": 100,
+              "conditions": [{"field": "emotion_state", "op": "==", "value": 1}, {"field": "mood_level", "op": ">", "value": 0.5}],
+              "actions": [{"type": "SetNpcState", "npc_state": 2}, {"type": "FleeFromThreat"}]
+            }
+          ]
+        },
+        "field_note": "条件字段名（emotion_state/mood_level/schedule_waypoint_id）必须与V2Brain表达式引擎实际支持的字段名一致，实现前阅读Town brain配置确认。若字段名不符运行时会报ERR_BIGWORLD_NPC_BRAIN_CONFIG_MISSING"
+      },
+      {
+        "name": "BigWorldNpcTypeCfg（配置表）",
+        "storage": "memory",
+        "description": "大世界NPC类型配置，每类有独立行为参数",
+        "fields": [
+          {"name": "NpcType", "type": "int32", "description": "0=Pedestrian,1=Vendor,2=Police,3=Animal"},
+          {"name": "FleeRadius", "type": "float", "description": "触发逃跑的危险半径（米）"},
+          {"name": "MoodDecayRate", "type": "float", "description": "每秒情绪衰减量[0,1]"},
+          {"name": "BrainConfigId", "type": "string", "description": "引用bigworld_npc_brain.json中的配置ID"}
+        ],
+        "config_pipeline": {
+          "note": "[迭代3修复 I3] 根据feedback_config_must_use_pipeline，配置文件必须走打表流程，禁止手动维护bin/config",
+          "type": "Excel打表（cfg_*.bytes）",
+          "steps": [
+            "1. 在 freelifeclient/RawTables/ 目录下创建 BigWorldNpcTypeCfg.xlsx，列：NpcType(int)/FleeRadius(float)/MoodDecayRate(float)/BrainConfigId(string)",
+            "2. 按规范填入4行数据（Pedestrian/Vendor/Police/Animal各一行）",
+            "3. 运行打表工具（_tool/目录，参考freelifeclient/CLAUDE.md的打表章节）",
+            "4. 打表产物 cfg_bigworld_npc_type.bytes 自动输出到 bin/config/",
+            "5. 服务端通过 cfg.BigWorldNpcTypeCfg 读取（参考其他cfg_*.go的读取模式）"
+          ]
+        },
+        "schedule_data_source": {
+          "note": "[迭代3修复 遗漏3] 大世界NPC日程数据来源",
+          "description": "BigWorldNpcBehaviorComp.ScheduleWaypointId 的目标路点ID由 bigworld_npc_spawn.json 中每个NPC条目的schedule_waypoints数组提供（与小镇的ScheduleComp JSON同模式）。实现时阅读现有 bigworld_npc_spawn.json 格式确认字段名。若暂无schedule_waypoints字段，P0阶段ScheduleWaypointId=0，WanderPlan作为降级行为。"
+        }
+      },
+      {
+        "name": "BigWorldNpcBehaviorComp（内存持久化说明）",
+        "note": "[迭代3修复 I5] 重启恢复策略明确",
+        "description": "storage=memory，服务器重启后所有情绪状态、ScheduleWaypointId丢失，NPC全部从WanderPlan开始。这是P0/P1阶段的可接受行为（重启后NPC自然恢复正常游走，无玩家可见的状态错误）。P2阶段视需要评估Redis持久化。实现者不得自行添加Redis持久化，避免增加不必要的存储依赖。"
+      }
+    ],
+    "actors": [
+      {
+        "name": "BigWorldNpcUpdateSystem（已有，修改）",
+        "responsibilities": [
+          "调用BigWorldNpcSpawner.TickSpawn()每500ms生成/回收NPC",
+          "P0新增：初始化时确保BtTickSystem已注册到大世界场景",
+          "P1新增：调用BigWorldNpcEmotionSystem.Tick()处理情绪衰减",
+          "P1新增：LOD档位决策——tick时对每个NPC遍历其AOI玩家列表，取所有玩家与该NPC距离²的最小值minDist2，按 minDist2<900→Near(500ms) / 900-3600→Mid(1500ms) / >3600→Far(3000ms) 分档，决定该NPC本次是否跳过tick。服务端自主计算，不依赖客户端上报。多玩家场景下取最近玩家距离保证不丢Near档NPC的高频tick。"
+        ],
+        "handlers": ["SceneType_BigWorld场景Tick"],
+        "lod_tick_decision_note": "[迭代3修复 C1] 原plan描述'服务端按LOD调整tick频率'但未说明服务端如何获知LOD档位。修复：服务端在tick时自主计算距离²（不依赖客户端LOD字段），取最近玩家距离分档。无玩家AOI时（minDist2=MaxFloat）NPC为Far档（3000ms），tick频率最低（见遗漏4补充）。"
+      },
+      {
+        "name": "BigWorldNpcSpawner（已有，修改）",
+        "responsibilities": [
+          "Spawn时给NPC实体附加BigWorldNpcBehaviorComp",
+          "从BigWorldNpcTypeCfg加载NPC类型配置，初始化行为参数",
+          "Despawn时清理BigWorldNpcBehaviorComp"
+        ],
+        "handlers": ["NPC生成/回收事件"]
+      },
+      {
+        "name": "BigWorldNpcEmotionSystem（新建，P1）",
+        "responsibilities": [
+          "监听游戏事件（枪声/爆炸/车辆碰撞）",
+          "计算AOI范围内受影响NPC（距离权重），设置EmotionState+MoodLevel",
+          "每1000ms tick：moodLevel -= decayRate * dt；归零时EmotionState=None，触发Plan切换",
+          "SetSync()推送变更到客户端",
+          "npc_state与emotion_state在同一帧SetSync()中同步写入，禁止分帧（见protocol.json field_relationships）"
+        ],
+        "handlers": ["GameEvent_Gunshot", "GameEvent_Explosion", "GameEvent_VehicleCrash"],
+        "thread_model_note": "[迭代3修复 I2] BigWorldNpcEmotionSystem运行在scene_server单线程Actor模型中（与V2Brain/NpcMoveSystem同一goroutine）。所有GameEvent_*事件通过scene的消息队列顺序投递，同一帧内多个事件（如爆炸连锁）按队列顺序处理，无并发写入风险，无需加锁。实现时确认事件投递走scene actor channel而非直接goroutine调用。",
+        "no_player_aoi_behavior": "[迭代3修复 遗漏4] 无玩家在AOI内时：BigWorldNpcUpdateSystem仍然tick（不暂停），但NPC距离²=MaxFloat → Far档（3000ms）。情绪事件不会被触发（无玩家意味着无枪声/爆炸事件来源），情绪衰减继续运行直到moodLevel归零。这是合理设计：NPC最终恢复正常状态，服务器不感知玩家有无来决定是否tick（保持设计简单）。"
+      },
+      {
+        "name": "BtTickSystem（已有，注册修复）",
+        "responsibilities": [
+          "每帧tick大世界场景的V2Brain",
+          "V2Brain.Tick()评估Plan切换条件（优先级+表达式）",
+          "触发PlanExecutor执行当前Plan的Actions（移动/待机/逃跑）"
+        ],
+        "handlers": ["BigWorld场景每帧Tick"]
+      }
+    ],
+    "error_codes": [
+      {"code": "ERR_BIGWORLD_NPC_BRAIN_CONFIG_MISSING", "description": "bigworld_npc_brain.json未找到或解析失败", "trigger": "服务启动时加载配置"},
+      {"code": "ERR_BIGWORLD_NPC_TYPE_UNKNOWN", "description": "NPC cfg_id对应的类型配置不存在", "trigger": "Spawn时查找类型配置"},
+      {"code": "ERR_BTTICK_ALREADY_REGISTERED", "description": "BtTickSystem重复注册", "trigger": "场景重载时幂等检查，日志Warning不报错"}
+    ],
+    "bttick_registration": {
+      "implementation_note": "阅读现有Town场景的BtTickSystem注册代码找到注册模式，在大世界场景初始化的对应位置添加注册",
+      "grep_target": "BtTickSystem",
+      "expected_location": "servers/scene_server/internal/ecs/system/或scene初始化代码中",
+      "idempotent": true
+    },
+    "v2brain_config_format": {
+      "file": "P1GoServer/bin/config/bigworld_npc_brain.json",
+      "note": "遵循现有ai/decision/v2brain包的配置格式，阅读Town的对应配置文件了解格式后编写",
+      "grep_target": "npc_brain",
+      "plans": ["WanderPlan", "IdlePlan", "SchedulePlan", "FleePlan"],
+      "flee_condition": "emotion_state == 1 AND mood_level > 0.5"
+    },
+    "aoi_enter_snapshot": {
+      "note": "[迭代3修复 C3] AOI进入时新字段完整快照推送设计",
+      "problem": "玩家进入AOI时若仅推送position/heading而不含emotion_state/npc_state/flee_attr_flags，新玩家将短暂看到NPC状态为0（正常），直到下次SetSync()才同步",
+      "verification_steps": [
+        "1. grep 大世界AOI进入处理函数（搜索 'AOIEnter' / 'aoi_enter' / 'BigWorldNpcController.OnAoiEnter'），确认是否调用了SetSync()或等价的全量快照推送",
+        "2. 若现有AOI enter已包含完整NpcSyncState（含emotion_state/npc_state/flee_attr_flags字段），则无需修改",
+        "3. 若不包含，需在AOI enter回调中显式构造包含所有字段的NpcSyncState并推送给新进入玩家（仅推给该玩家，不广播）"
+      ],
+      "required_fields_in_snapshot": ["emotion_state", "npc_state", "flee_attr_flags", "position", "heading", "move_speed", "schedule_waypoint_id"],
+      "implementation_note": "实现前必须阅读现有BigWorld AOI enter代码确认当前推送逻辑，不要假设已包含或不包含"
+    },
+    "logging_standards": {
+      "fields": "npc_entity_id= npc_cfg_id= plan_id= emotion_state=（遵循P1GoServer logging.md）",
+      "format_verbs": "统一使用%v，禁止%d/%s",
+      "module_tag": "[BigWorldNpcBehaviorComp] [BigWorldNpcEmotionSystem]"
+    }
+  }
+}

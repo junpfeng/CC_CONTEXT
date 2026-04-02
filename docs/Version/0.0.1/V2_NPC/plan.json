@@ -1,0 +1,402 @@
+{
+  "name": "大世界V2 NPC系统 技术规格",
+  "overview": "基于V2正交管线框架，在大世界场景实现完整解耦的NPC系统。通过sceneType=BigWorld注册独立维度配置和ExtHandler，服务端/客户端代码与小镇完全隔离。P0阶段聚焦普通市民NPC的自主行为表现（巡逻/休息/聚集），不含载具驾驶、对话交互、特殊职业。",
+  "complexity": "complex",
+  "sub_files": [
+    "plan/protocol.json",
+    "plan/flow.json",
+    "plan/server.json",
+    "plan/client.json",
+    "plan/testing.json"
+  ],
+
+  "decisions": [
+    {"item": "最大NPC数量", "decision": "服务器50，客户端同屏20", "tag": "自主决策"},
+    {"item": "载具驾驶", "decision": "P0仅步行（Walk/Run），后续扩展", "tag": "自主决策"},
+    {"item": "特殊职业", "decision": "P0仅普通市民NPC", "tag": "自主决策"},
+    {"item": "日程复杂度", "decision": "<!-- [迭代11修复] N3: 澄清日程P0/P1边界 --> P0实现日程框架代码（ScheduleSensor+ScheduleState+配置加载），但所有NPC使用default_behavior(patrol)，不启用时段切换；P1启用日夜循环后激活时段切换（巡逻/休息/聚集三种状态按时段轮转）", "tag": "自主决策"},
+    {"item": "动物系统交互", "decision": "独立管理，不共享Spawner", "tag": "自主决策"},
+    {"item": "对话交互", "decision": "P0不支持，仅环境角色", "tag": "自主决策"},
+    {"item": "<!-- [迭代9修复] I6 --> 外观系统P0/P1边界", "decision": "P0包含基础外观功能（JSON配置5-8套固定外观池+权重随机分配+对象池复用外观管理），P1扩展为动态外观系统（更多外观+配置表驱动+运行时扩展）。feature.json REQ-014标记为P1指的是'完整外观多样化'，P0的基础外观池是NPC系统的必要组成部分", "tag": "自主决策"}
+  ],
+
+  "protocols": [
+    {
+      "name": "NpcDataUpdate（复用）",
+      "type": "ntf",
+      "description": "NPC状态增量/全量同步，大世界NPC复用此消息，通过NpcV2Info承载V2管线状态",
+      "fields": [
+        {"name": "npc_id", "type": "uint64", "description": "NPC实体ID"},
+        {"name": "npc_v2_info", "type": "NpcV2Info", "description": "V2管线状态数据（含AnimState/Movement/Emotion等）"},
+        {"name": "is_all", "type": "bool", "description": "是否全量同步"}
+      ]
+    },
+    {
+      "name": "NpcV2Info（复用）",
+      "type": "res",
+      "description": "V2 NPC状态子结构，大世界NPC复用所有字段，无需扩展",
+      "fields": [
+        {"name": "anim_state", "type": "int32", "description": "动画状态枚举"},
+        {"name": "movement", "type": "NpcMovement", "description": "<!-- [迭代7修复] I2 --> 移动数据（位置/朝向/速度）。服务端NpcState.Movement额外维护lastValidY(float32)字段（不通过协议下发），用于Raycast降级时兜底"},
+        {"name": "emotion", "type": "EmotionData", "description": "情绪数据"},
+        {"name": "behavior_state", "type": "int32", "description": "行为状态（在sync层推导）"}
+      ]
+    }
+  ],
+
+  "flows": {
+    "main": [
+      {
+        "name": "NPC生成流程",
+        "description": "玩家进入大世界AOI区域，服务端动态创建NPC并同步客户端",
+        "steps": [
+          "步骤1: 玩家进入大世界场景，AOI系统检测视野范围",
+          "步骤2: BigWorldNpcSpawner根据密度配置和上限决定生成NPC",
+          "步骤3: SceneNpcMgr.CreateNpc → BigWorldExtHandler.OnNpcCreated → 初始化V2Pipeline",
+          "步骤4: NpcDataUpdate全量同步到客户端",
+          "步骤5: 客户端BigWorldNpcManager从对象池获取/创建NPC实体",
+          "步骤6: BigWorldNpcController.OnInit注册所有Comp"
+        ]
+      },
+      {
+        "name": "NPC行为循环",
+        "description": "NPC在大世界中自主行动的持续循环",
+        "steps": [
+          "步骤1: SensorSystem.TickSensor采集环境信息→写入NpcState.Perception",
+          "步骤2: V2Brain读取NpcState决策→各维度独立产出Plan",
+          "步骤3: OrthogonalPipeline按顺序执行Handler（engagement→expression→locomotion→navigation）",
+          "步骤4: Handler更新NpcState对应字段",
+          "步骤5: syncNpcMovement桥接NpcState.Movement→NpcMoveComp执行移动",
+          "步骤6: net_update增量同步变化字段到客户端",
+          "步骤7: 客户端DataSignal驱动Comp更新→FSM状态切换→动画播放"
+        ]
+      },
+      {
+        "name": "NPC回收流程",
+        "description": "NPC离开玩家AOI或达到上限时回收",
+        "steps": [
+          "步骤1: AOI系统检测NPC离开玩家视野",
+          "步骤2: BigWorldNpcSpawner决定回收该NPC",
+          "步骤3: SceneNpcMgr.DestroyNpc → pipeline.RemoveEntity → state.Release归池",
+          "步骤4: 客户端收到实体销毁通知 → BigWorldNpcManager回收到对象池",
+          "步骤5: <!-- [迭代7修复] C1 双阶段回收策略 --> 回收时执行Controller.OnClear()做资源释放（停止动画、Cancel UniTask、清理事件监听、释放大对象引用如SnapshotQueue中历史帧数据）；然后归还对象池。取出时执行ResetForPool()做状态初始化（清空SnapshotQueue、FSM重置为Idle、清零速度、重建CancellationTokenSource）。两阶段职责分离见pool_reset_flow表格"
+        ]
+      },
+      {
+        "name": "场景切换清理流程",
+        "description": "<!-- [迭代5修复] C1 玩家离开大世界场景时清理所有NPC --> 玩家从大世界切换到其他场景时，清理BigWorldNpcManager和所有NPC实体",
+        "steps": [
+          "步骤1: ManagerCenter触发BigWorldNpcManager.OnClear()",
+          "步骤2: 遍历entityDict中所有活跃NPC，逐个调用Controller.OnClear()（解除事件监听、Cancel异步操作、停止动画）",
+          "步骤3: 清空对象池（Destroy所有池化GameObject，释放引用）",
+          "步骤4: 重置内部状态（清空entityDict、清空LOD分级缓存、重置统计计数器）",
+          "步骤5: 日志记录清理数量，确认无残留"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "NPC生成超上限",
+        "trigger": "当前大世界NPC数量达到50上限",
+        "handling": "新生成请求排入队列，等待最远NPC被回收后再创建；优先回收距离最远的NPC"
+      },
+      {
+        "name": "寻路失败",
+        "trigger": "A*寻路无法找到路径（路点不连通或超时）",
+        "handling": "NPC回退到Idle状态，等待下次日程切换重新选择目标点；记录错误日志"
+      },
+      {
+        "name": "客户端NPC对象池耗尽",
+        "trigger": "对象池中无可用NPC实例且达到同屏上限",
+        "handling": "等待最远NPC被回收释放对象；超出视距的NPC优先被LOD系统降级"
+      },
+      {
+        "name": "断线重连",
+        "trigger": "客户端断线后重新连接",
+        "handling": "<!-- [迭代7修复] I3 pendingValidation生命周期 --> <!-- [迭代9修复] N3: pendingValidation与正常despawn交互 --> <!-- [迭代11修复] C1: 全量同步绕过节流 --> 服务端对AOI内所有NPC发送全量NpcDataUpdate（is_all=true），全量同步必须是单次原子消息（不分包），且绕过net_update的max_sync_per_frame=15节流限制（is_all=true路径跳过帧同步计数器，一次性推送全部NPC状态）。客户端流程：(1)标记所有现存NPC为pendingValidation；(2)收到is_all=true的全量消息后统一执行diff（存在的更新/不存在的销毁/新增的创建）；(3)pendingValidation超时5s自动清除（清除时销毁仍标记为pending的NPC）；(4)重连期间收到的增量NpcDataUpdate正常处理但不触发销毁，仅更新数据；(5)pendingValidation窗口期内收到正常despawn消息（NPC离开AOI）时，直接执行销毁并从pendingValidation集合移除，不等待超时"
+      },
+      {
+        "name": "<!-- [迭代5修复] I3 --> 路网数据加载失败",
+        "trigger": "Spawner初始化时路网数据文件缺失、格式错误或路点数为0",
+        "handling": "Spawner初始化时校验路网数据完整性（路点数>0、连通图基本检查）。加载失败时log.Errorf记录详细错误，Spawner标记为disabled状态不生成NPC，避免后续逻辑在无路网数据下nil panic。NavigationHandler显式判断路网未加载（roadNet==nil）时直接返回ERR_BIGWORLD_NPC_PATH_NOT_FOUND，不走A*逻辑"
+      },
+      {
+        "name": "<!-- [迭代5修复] I5 --> 服务器重启后NPC重建",
+        "trigger": "场景服务器重启完成，玩家重新连接",
+        "handling": "<!-- [迭代7修复] I4 客户端过渡 --> P0策略：大世界NPC为无名市民，不需要恢复个体状态。重启后所有NPC丢失，Spawner在场景加载完成后自动重新初始化：加载路网数据→校验完整性→根据在线玩家位置重新TickSpawn生成NPC。客户端过渡：场景服务器重启时Gateway向客户端推送场景重载通知，客户端BigWorldNpcManager执行OnClear()清空所有NPC后等待新的AOI推送，断线重连的diff更新流程自然处理NPC集合差异"
+      },
+      {
+        "name": "<!-- [迭代7修复] I2 --> Y坐标Raycast降级",
+        "trigger": "NavigationHandler中Grounds层Raycast未命中（地形接缝/collider有洞/命中屋顶）",
+        "handling": "三级降级策略：(1)Raycast失败→尝试SphereCast(radius=1m)扩大检测范围；(2)SphereCast仍失败→使用上一帧有效Y值（NpcState.Movement.lastValidY字段）；(3)连续30帧无有效Y值→标记NPC为异常并despawn，log.Errorf记录位置信息。Raycast成功时始终更新lastValidY"
+      },
+      {
+        "name": "<!-- [迭代7修复] 遗漏场景1 --> NPC移动中掉入水面",
+        "trigger": "NPC移动过程中Y坐标<50（reference_bigworld_ocean_height水面高度）",
+        "handling": "NavigationHandler每帧检测当前Y值，Y<50时立即传送回最近有效路点（从路网数据中查找距当前XZ最近且Y>50的路点），传送失败则直接despawn回收"
+      },
+      {
+        "name": "<!-- [迭代7修复] 遗漏场景4 --> 配置热更新",
+        "trigger": "运行时SpawnConfig/ScheduleConfig/AppearanceConfig发生热更",
+        "handling": "P0策略：已生成NPC不重新加载配置，继续使用创建时的配置快照。新生成的NPC使用新配置。如需全量刷新，通过GM命令bigworld_npc_clear+bigworld_npc_spawn手动重建"
+      }
+    ]
+  },
+
+  "server_design": {
+    "data_models": [
+      {
+        "name": "BigWorldNpcConfig",
+        "storage": "memory",
+        "description": "大世界NPC生成配置（从配置表加载到内存）",
+        "fields": [
+          {"name": "max_count", "type": "int", "description": "最大NPC数量（默认50）"},
+          {"name": "spawn_density", "type": "float32", "description": "生成密度（每100m²）"},
+          {"name": "spawn_radius", "type": "float32", "description": "围绕玩家的生成半径"},
+          {"name": "despawn_radius", "type": "float32", "description": "回收半径（>spawn_radius）"},
+          {"name": "spawn_batch_size", "type": "int", "description": "每帧最大生成数（防突刺）"}
+        ]
+      },
+      {
+        "name": "BigWorldNpcSpawnerState",
+        "storage": "memory",
+        "description": "<!-- [迭代5修复] I5 --> Spawner运行时状态，服务器重启后自动重建（不持久化）。重启流程：场景加载完成→Spawner初始化（加载路网+校验）→根据在线玩家位置重新TickSpawn。P0接受重启后NPC全部重新生成（无名市民无需恢复个体状态）",
+        "fields": [
+          {"name": "disabled", "type": "bool", "description": "路网加载失败时标记为true，禁止生成"},
+          {"name": "player_quotas", "type": "map[uint64]int", "description": "<!-- [迭代5修复] C2 --> 每个玩家(playerId)的当前NPC配额"},
+          {"name": "player_index", "type": "int", "description": "轮询指针，TickSpawn时按顺序为每个玩家生成"},
+          {"name": "orphaned_npcs", "type": "map[uint64]int64", "description": "<!-- [迭代7修复] C2 --> 孤儿NPC(npcId→标记时间戳)，等待转移或延迟despawn"},
+          {"name": "dormant", "type": "bool", "description": "<!-- [迭代9修复] I2 --> 所有玩家离开后进入休眠，停止TickSpawn和Pipeline Tick"}
+        ]
+      },
+      {
+        "name": "BigWorldNpcSchedule",
+        "storage": "memory",
+        "description": "大世界NPC日程配置（V2_BigWorld前缀，JSON格式加载）",
+        "fields": [
+          {"name": "schedule_id", "type": "string", "description": "日程ID（V2_BigWorld_xxx）"},
+          {"name": "entries", "type": "[]ScheduleEntry", "description": "<!-- [迭代9修复] I5: 补充时段格式 --> 日程条目列表。ScheduleEntry格式：{timeRange: {start: int(游戏小时0-23), end: int(游戏小时0-23)}, behaviorType: string(patrol/rest/gather), targetAreaId: string, weight: int}。timeRange为游戏内小时区间（如{start:8,end:18}表示白天），start>end时表示跨午夜（如{start:22,end:6}）"},
+          {"name": "default_behavior", "type": "string", "description": "<!-- [迭代9修复] I5 --> 无日程匹配时的默认行为（patrol）。触发条件：(1)当前游戏时间不在任何entry的timeRange内；(2)日程配置加载失败；(3)P0暂不启用日夜循环时所有NPC始终使用此默认行为"}
+        ]
+      }
+    ],
+    "actors": [
+      {
+        "name": "SceneNpcMgr（扩展）",
+        "responsibilities": [
+          "通过sceneType=BigWorld创建/销毁大世界NPC",
+          "管理NPC实体池（state.Acquire/Release）",
+          "调度V2 Pipeline Tick"
+        ],
+        "handlers": ["CreateNpc", "DestroyNpc", "TickSensor", "TickPipeline"],
+        "traffic_integration": "<!-- [迭代7修复] C3 --> <!-- [迭代11修复] I1: SceneImplI实现者清单 --> SceneImplI接口新增GetTrafficManager()和GetTrafficLightState(intersectionId)，供NavigationHandler读取交通状态。SensorSystem中新增TrafficLightSensor插件，每5帧采集NPC所在路口的红绿灯状态写入NpcState.PerceptionState.TrafficLightState（枚举：Unknown/Red/Green/Yellow），NavigationHandler只读NpcState做决策，不直接import TrafficManager",
+        "scene_impl_implementors": "<!-- [迭代11修复] I1 --> SceneImplI当前实现者：(1)BigWorldSceneImpl—完整实现，返回真实TrafficManager；(2)TownSceneImpl—空实现，GetTrafficManager()返回nil，GetTrafficLightState()返回Unknown；(3)SakuraSceneImpl—同Town返回nil/Unknown；(4)AnimalSceneImpl（如存在）—同Town。推荐方案：抽取独立TrafficAwareScene接口，BigWorldSceneImpl额外实现，调用处类型断言(impl.(TrafficAwareScene))使用，其他场景无需改动"
+      },
+      {
+        "name": "BigWorldExtHandler（新增）",
+        "responsibilities": [
+          "大世界NPC创建初始化（注入感知插件、日程配置、外观）",
+          "大世界NPC销毁清理",
+          "BigWorld专属感知插件注册",
+          "<!-- [迭代7修复] I6 --> OnNpcCreated加载V2_BigWorld schedule配置，加载失败时使用default_behavior(patrol)作为fallback，log.Errorf报警"
+        ],
+        "handlers": ["OnNpcCreated", "OnNpcDestroyed"]
+      },
+      {
+        "name": "BigWorldNpcSpawner（新增）",
+        "responsibilities": [
+          "根据玩家AOI动态管理NPC生成/回收",
+          "控制生成密度和上限",
+          "分帧创建防突刺",
+          "<!-- [迭代5修复] C2 多玩家分配 --> 维护每个玩家的NPC配额（max_count / onlinePlayerCount），TickSpawn按轮询顺序为每个玩家生成，非只处理第一个。当某玩家周围已有足够NPC（被其他玩家Spawn的NPC也在其AOI内时计入）则跳过该玩家配额",
+          "<!-- [迭代5修复] I3 路网校验 --> 初始化时校验路网数据完整性（路点数>0），加载失败时log.Errorf并标记disabled，不生成NPC"
+        ],
+        "handlers": ["TickSpawn", "OnPlayerMove", "OnPlayerLeave"],
+        "last_player_leave": "<!-- [迭代9修复] I2: 最后一个玩家离开时的NPC清理策略 --> 最后一个玩家离开大世界场景时：(1) Spawner停止TickSpawn（设dormant=true）；(2) 所有NPC标记为orphaned；(3) orphaned NPC在DespawnDelay(5s)后全部批量回收（复用分帧despawn逻辑，每帧最多5个）；(4) Spawner进入dormant状态，不执行Pipeline Tick（防空跑浪费CPU）；(5) 新玩家进入时Spawner重新激活（dormant=false），重新TickSpawn生成NPC",
+        "multi_player_strategy": "<!-- [迭代7修复] C2 配额竞态处理 --> (1) 每个玩家期望配额 = max_count / onlinePlayerCount，保证基本公平性；(2) TickSpawn维护playerIndex轮询指针，每Tick为当前玩家尝试生成spawn_batch_size个NPC，下次Tick切到下一个玩家；(3) 生成前检查候选位置周围是否已有其他玩家生成的NPC，有则计入该玩家的已有量，避免重复生成；(4) 玩家下线配额重算流程：玩家离开→其名下NPC标记为orphaned→按距离转移给最近在线玩家（更新owner字段）→新owner超出配额的orphaned NPC延迟5s despawn（距离最远优先）；(5) 配额重算在TickSpawn主循环中单线程处理（Scene Server本身是单线程ECS tick），不存在并发写player_quotas问题；(6) 重算期间新Spawn请求正常排队，等重算完成后下一Tick处理"
+      }
+    ],
+    "gm_commands": [
+      {
+        "name": "<!-- [迭代5修复] I4 --> bigworld_npc_spawn",
+        "usage": "/ke* gm bigworld_npc_spawn <count>",
+        "description": "强制在当前玩家周围生成指定数量NPC，忽略密度限制但受max_count约束"
+      },
+      {
+        "name": "bigworld_npc_clear",
+        "usage": "/ke* gm bigworld_npc_clear",
+        "description": "清除所有大世界NPC（调用Spawner批量回收）"
+      },
+      {
+        "name": "bigworld_npc_info",
+        "usage": "/ke* gm bigworld_npc_info <npcId>",
+        "description": "查看单个NPC状态详情（Pipeline维度状态、日程、位置、AOI归属玩家）"
+      },
+      {
+        "name": "bigworld_npc_schedule",
+        "usage": "/ke* gm bigworld_npc_schedule <npcId> <scheduleId>",
+        "description": "强制切换指定NPC的日程"
+      },
+      {
+        "name": "bigworld_npc_lod",
+        "usage": "/ke* gm bigworld_npc_lod",
+        "description": "输出当前所有NPC的LOD级别分布统计"
+      }
+    ],
+    "appearance_config": {
+      "description": "<!-- [迭代5修复] I2 --> 大世界NPC外观配置池，独立于小镇",
+      "model": {
+        "name": "BigWorldNpcAppearancePool",
+        "storage": "memory",
+        "fields": [
+          {"name": "pool_id", "type": "string", "description": "外观池ID（bigworld_citizen）"},
+          {"name": "entries", "type": "[]AppearanceEntry", "description": "外观条目列表"},
+          {"name": "entry.body_parts_map", "type": "map[string]string", "description": "部件→资源ID映射（hair/top/bottom/shoes/accessory）"},
+          {"name": "entry.weight", "type": "int", "description": "随机权重"}
+        ]
+      },
+      "p0_simplification": "<!-- [迭代7修复] I1 配置驱动 --> P0阶段使用JSON配置文件（bigworld_npc_appearance.json）存储5-8套固定外观组合，BigWorldExtHandler.OnNpcCreated按权重随机选取。不hardcode在代码中，P1扩展时零代码改动。外观ID随NpcDataUpdate下发，客户端按ID加载对应BodyParts预制件。对象池复用时OnClear()卸载当前外观部件，ResetForPool()清零外观引用，Spawn时重新应用新外观",
+      "client_loading": "<!-- [迭代11修复] I4: 外观加载失败fallback --> BigWorldNpcController持有AppearanceComp，OnInit时根据外观ID加载BodyParts预制件并挂载到骨骼节点。回收时卸载当前外观部件，复用时重新加载。加载失败fallback：单部件失败→跳过该部件；全部失败→应用配置中第一套外观（body-only）；fallback也失败→使用prefab自带默认mesh。确保NPC不会隐形或T-pose"
+    },
+    "error_codes": [
+      {
+        "code": "ERR_BIGWORLD_NPC_LIMIT",
+        "description": "大世界NPC数量达到上限",
+        "trigger": "尝试创建NPC时当前数量>=max_count"
+      },
+      {
+        "code": "ERR_BIGWORLD_NPC_PATH_NOT_FOUND",
+        "description": "大世界NPC寻路失败",
+        "trigger": "A*寻路在规定时间内未找到有效路径"
+      }
+    ]
+  },
+
+  "client_design": {
+    "managers": [
+      {
+        "name": "BigWorldNpcManager",
+        "base_type": "BaseManager",
+        "responsibilities": [
+          "大世界NPC生命周期管理（Spawn/Despawn）",
+          "NPC对象池管理（预热+回收）",
+          "<!-- [迭代7修复] I5 LOD感知插值 --> <!-- [迭代9修复] C2: 统一LOD阈值 --> AI LOD管理（根据距离调整更新频率）：客户端根据自身与NPC距离判断LOD级别（FULL<50m/REDUCED 50-150m/MINIMAL>150m），REDUCED级别TransformSnapshotQueue使用更长外推窗口（300ms→500ms）和EaseOut缓动，MINIMAL级别使用800ms外推窗口和线性缓动，避免服务端降频tick导致的停顿/末端滑行。LOD阈值对照见本节末尾lod_alignment表",
+          "<!-- [迭代5修复] C1 场景切换清理 --> <!-- [迭代9修复] I3: 补充预热策略 --> <!-- [迭代11修复] I5: 预热async流程 --> OnClear()时：(1)遍历entityDict所有活跃NPC执行Controller.OnClear()；(2)清空对象池（Destroy所有池化GameObject，释放内存）；(3)重置entityDict、LOD缓存、统计计数器、_isReady=false。预热策略：OnInit()中启动async UniTask预热——先await YooAsset异步加载NPC prefab，完成后同步Instantiate pool_size=20个实例入池，标记_isReady=true。_isReady=false期间收到NPC生成消息排入_pendingSpawnQueue，就绪后统一处理。预热在loading界面期间完成（预算<500ms），避免gameplay阶段首次Spawn的Instantiate卡顿"
+        ],
+        "pool_reset_flow": "<!-- [迭代7修复] C1 双阶段对象池策略 --> 回收阶段OnClear()：(1)取消所有CancellationToken；(2)解除DataSignal/事件监听；(3)停止所有动画层；(4)释放大对象引用（SnapshotQueue历史帧数据.Clear()防内存泄漏）。取出阶段ResetForPool()：(1)FSM ForceState(Idle)；(2)MoveComp清零速度和目标；(3)重建CancellationTokenSource；(4)清空SnapshotQueue确保无脏状态。OnClear负责'释放资源防泄漏'，ResetForPool负责'初始化状态防残留'，两者职责不重叠。调用顺序：回收时OnClear()→入池；取出时ResetForPool()→OnInit()"
+      }
+    ],
+    "ui_panels": [],
+    "state_management": "客户端不缓存NPC决策状态，所有行为状态由服务器通过NpcDataUpdate推送。本地仅维护：(1)NPC实体字典（entityId→Controller），(2)对象池，(3)LOD分级（近/中/远三档）。数据流：NpcData.NetData.Listen→DataSignal→各Comp响应。<!-- [迭代5修复] C1 --> 场景切换时BigWorldNpcManager.OnClear()负责完整清理（见responsibilities），确保无实体泄漏、无事件残留、无对象池状态不一致。",
+        "error_handling": "网络延迟时客户端NPC维持最后已知状态（继续当前动画和移动插值），不做客户端预测。<!-- [迭代7修复] I3 --> 断线重连采用diff更新策略：pendingValidation超时5s，全量同步为原子消息（is_all=true不分包），收到后统一diff，期间增量更新不触发销毁。NPC创建失败时记录MLog.Error并跳过，不影响其他NPC。",
+    "collision_setting": "<!-- [迭代7修复] 遗漏场景3 --> <!-- [迭代9修复] C1: 统一碰撞策略，消除与server.json矛盾 --> P0阶段NPC使用Kinematic Rigidbody + CapsuleCollider（isTrigger=false），不响应外力推挤（Kinematic不受物理力影响）。碰撞层配置：NPC层与Grounds层交互（Raycast地面检测），NPC层与Vehicle层设为碰撞检测（OnCollisionStay通知但不产生物理推力），NPC层不与Player层产生物理碰撞。载具避让由服务端NavigationHandler前方5m检测驱动（不依赖客户端物理碰撞响应），攻击判定使用射线/范围检测而非碰撞体",
+    "nameplate_setting": "<!-- [迭代7修复] 遗漏场景5 --> P0不显示NPC头顶UI（NamePlate/血条），NPC为无名市民环境角色。P1可扩展NamePlateComp",
+    "batch_despawn": "<!-- [迭代7修复] N1 批量despawn分帧 --> 玩家快速传送导致AOI大变时，despawn也做分帧处理：每帧最多销毁5个NPC（与spawn_batch_size对称），超出的排入despawnQueue下帧处理",
+    "lod_alignment": {
+      "_comment": "<!-- [迭代9修复] C2: 两端LOD阈值统一对照表（唯一权威源） -->",
+      "server_lod": [
+        {"level": "HIGH", "distance": "0-100m", "tick_interval": "每帧", "sensor_interval": "500ms"},
+        {"level": "MEDIUM", "distance": "100-200m", "tick_interval": "每3帧", "sensor_interval": "1500ms"},
+        {"level": "LOW", "distance": "200-300m", "tick_interval": "每10帧", "sensor_interval": "5000ms"}
+      ],
+      "client_lod": [
+        {"level": "FULL", "distance": "0-50m", "animation_update": "每帧", "render": "完整模型+阴影", "interpolation": "默认外推窗口300ms"},
+        {"level": "REDUCED", "distance": "50-150m", "animation_update": "每3帧", "render": "简化模型+无阴影", "interpolation": "外推窗口500ms+EaseOut缓动"},
+        {"level": "MINIMAL", "distance": "150m+", "animation_update": "暂停", "render": "HiZCulling裁剪", "interpolation": "外推窗口800ms+线性缓动"}
+      ],
+      "design_rationale": "客户端LOD比服务端更激进（50m就开始降级），因为渲染/动画开销远大于服务端Tick开销。服务端HIGH区(<100m)内客户端可能已降级动画(50-100m REDUCED)，但数据仍在推送用于TransformSnapshotQueue插值平滑。"
+    }
+  },
+
+  "testing": {
+    "server": [
+      "BigWorld Pipeline注册正确性：CreateNpc后Pipeline实例非nil，维度配置正确",
+      "NPC生成/回收不泄漏：反复CreateNpc/DestroyNpc后state池和NpcMap大小恢复",
+      "寻路集成：BigWorld路网A*寻路返回有效路径，Y坐标经Raycast修正",
+      "日程切换：模拟时间推进，验证NPC行为状态正确切换",
+      "上限控制：达到max_count后新生成请求被正确排队/拒绝",
+      "<!-- [迭代7修复] I6 --> Schedule配置缺失容错：配置文件不存在时NPC使用patrol默认行为，不panic",
+      "<!-- [迭代7修复] I2 --> Raycast降级：模拟Grounds层有洞时SphereCast兜底，连续30帧无有效Y值时NPC被despawn",
+      "<!-- [迭代7修复] C2 --> 玩家下线配额重算：玩家离开后orphaned NPC正确转移，超额NPC延迟despawn"
+    ],
+    "client": [
+      "NPC对象池：预热后Spawn不产生GC Alloc",
+      "动画状态机：Idle→Walk→Run→Turn切换无残留动画层",
+      "HiZCulling：NPC超出视距后Animancer图暂停，回到视野后恢复正常",
+      "移动平滑：TransformSnapshotQueue插值无抖动",
+      "断线重连：重连后大世界NPC正确重建，状态与服务器一致"
+    ]
+  },
+
+  "file_list": [
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_ext_handler.go", "action": "create", "side": "server", "description": "大世界NPC扩展处理器（创建/销毁/感知注入）"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_npc_spawner.go", "action": "create", "side": "server", "description": "大世界NPC AOI动态生成器"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/v2_pipeline_factory.go", "action": "modify", "side": "server", "description": "注册BigWorld场景类型的V2Pipeline配置"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/v2_pipeline_defaults.go", "action": "modify", "side": "server", "description": "新增BigWorld默认维度配置"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/scene_npc_mgr.go", "action": "modify", "side": "server", "description": "createExt工厂添加BigWorld分支"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/com/cnpc/bigworld_npc.go", "action": "create", "side": "server", "description": "BigWorldSceneNpcExt实现（SceneNpcExt接口）"},
+    {"path": "P1GoServer/common/ai/execution/handlers/bigworld_locomotion_handler.go", "action": "create", "side": "server", "description": "大世界locomotion维度Handler"},
+    {"path": "P1GoServer/common/ai/execution/handlers/bigworld_navigation_handler.go", "action": "create", "side": "server", "description": "<!-- [迭代7修复] C3 交通集成 --> <!-- [迭代11修复] I3: TrafficManager nil降级 --> 大世界navigation维度Handler。车辆避让：通过SceneImplI.GetTrafficManager()获取TrafficManager引用（避免circular import），检测前方5m车辆（TrafficManager==nil时跳过车辆检测）。红绿灯：SensorSystem每5帧采集一次红绿灯状态写入NpcState.PerceptionState.TrafficLightState，NavigationHandler只读NpcState判断是否停行。TrafficManager未就绪时默认通行（Green）。等红灯行为：locomotion切Idle（播放idle动画），navigation保持当前路径但暂停推进waypoint_index，绿灯后恢复Walk"},
+    {"path": "P1GoServer/common/ai/execution/handlers/bigworld_engagement_handler.go", "action": "create", "side": "server", "description": "大世界engagement维度Handler（P0简化版）"},
+    {"path": "P1GoServer/common/ai/execution/handlers/bigworld_expression_handler.go", "action": "create", "side": "server", "description": "大世界expression维度Handler（P0简化版）"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/system/npc/bigworld_npc_update.go", "action": "create", "side": "server", "description": "大世界NPC更新System（Tick Spawner+Pipeline）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/BigWorldNpcController.cs", "action": "create", "side": "client", "description": "大世界NPC主控制器"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAnimationComp.cs", "action": "create", "side": "client", "description": "大世界NPC Animancer多层动画组件"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcFsmComp.cs", "action": "create", "side": "client", "description": "大世界NPC轻量级FSM状态机"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcTransformComp.cs", "action": "create", "side": "client", "description": "大世界NPC位置同步（SnapshotQueue插值）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcMoveComp.cs", "action": "create", "side": "client", "description": "大世界NPC移动驱动组件"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcEmotionComp.cs", "action": "create", "side": "client", "description": "大世界NPC情绪表现组件（P1）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAppearanceComp.cs", "action": "create", "side": "client", "description": "<!-- [迭代5修复] I2 --> 大世界NPC外观加载与应用组件（BodyParts挂载/回收重置）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcIdleState.cs", "action": "create", "side": "client", "description": "FSM Idle状态"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcMoveState.cs", "action": "create", "side": "client", "description": "FSM Move状态（Walk/Run）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcTurnState.cs", "action": "create", "side": "client", "description": "FSM Turn状态"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Managers/BigWorldNpcManager.cs", "action": "create", "side": "client", "description": "大世界NPC生命周期+对象池管理器"}
+  ],
+
+  "constitution_check": {
+    "server": [
+      "✅ Actor通信通过消息传递：NPC状态通过NpcDataUpdate协议同步，不直接跨Actor读写",
+      "✅ 错误显式处理：所有CreateNpc/寻路失败均有log.Errorf+返回error",
+      "✅ safego启动协程：Pipeline Tick在主循环中执行，无需额外协程",
+      "✅ 无不必要复杂性：P0仅3种日程状态，无过度设计",
+      "✅ 无全局变量：BigWorldNpcConfig通过SceneNpcMgr持有",
+      "✅ 禁止手动编辑区域：不触碰proto生成代码和ORM代码",
+      "✅ 配置分发链路：日程配置走JSON加载，不手动维护bin/config",
+      "<!-- [迭代5修复] I4 --> ✅ GM命令带/ke*gm前缀，符合feedback_gm_prefix_required",
+      "<!-- [迭代5修复] I5 --> ✅ 重启后内存状态自动重建，无需持久化（P0无名市民无个体恢复需求）",
+      "<!-- [迭代5修复] I3 --> ✅ 路网加载失败显式log.Errorf+禁用Spawner，不静默忽略",
+      "<!-- [迭代7修复] C3 --> ✅ 交通集成通过SceneImplI接口暴露，不直接import TrafficManager（遵循feedback_circular_import）",
+      "<!-- [迭代7修复] I1 --> ✅ 外观配置走JSON文件，不hardcode（遵循配置驱动原则）",
+      "<!-- [迭代7修复] I6 --> ✅ Schedule加载失败有fallback(patrol)+log.Errorf，不静默忽略",
+      "<!-- [迭代7修复] I2 --> ✅ Raycast降级三级策略+连续失败despawn，异常处理完整",
+      "<!-- [迭代9修复] C1 --> ✅ 碰撞策略统一为Kinematic Rigidbody，server.json不再描述客户端碰撞组件选型",
+      "<!-- [迭代9修复] I2 --> ✅ Spawner dormant机制防空跑Pipeline Tick浪费CPU",
+      "<!-- [迭代9修复] I4 --> <!-- [迭代11修复] C1 --> ✅ 同步节流max_sync_per_frame=15，日程切换分帧，符合手游带宽预算。断线重连全量同步(is_all=true)绕过节流，50NPC×200B≈10KB单帧burst可接受",
+      "<!-- [迭代9修复] I5 --> ✅ 日程依赖GameTimeManager，P0 fallback机制完整",
+      "<!-- [迭代11修复] I1 --> ✅ SceneImplI实现者清单完整，推荐TrafficAwareScene接口方案最小侵入",
+      "<!-- [迭代11修复] I2 --> ✅ TickSpawn每500ms调用一次（15帧@30fps），Spawn/Despawn交替执行",
+      "<!-- [迭代11修复] I3 --> ✅ TrafficManager未就绪时默认通行（Green），不卡死NPC",
+      "<!-- [迭代11修复] C2 --> ✅ NpcState所有新增字段标注sync:true/false，服务端专用字段不入Snapshot"
+    ],
+    "client": [
+      "✅ Controller+Comp模式：BigWorldNpcController.OnInit中AddComp注册",
+      "✅ 私有字段_camelCase：遵循命名规范",
+      "✅ MLog日志：不使用Debug.Log",
+      "✅ UniTask异步：所有async操作使用UniTask+CancellationToken",
+      "✅ 事件订阅配对解除：OnInit中Listen，OnClear中UnListen",
+      "✅ 对象池：NPC使用对象池，不直接Destroy",
+      "✅ 动画层清理：FSM OnExit必须Stop所有使用过的动画层",
+      "✅ 代码隔离：BigWorld目录下，不引用S1Town模块类型",
+      "✅ 禁止编辑生成代码：不触碰Config/Gen和Proto生成目录",
+      "<!-- [迭代5修复] C1 --> ✅ OnClear()配对清理：BigWorldNpcManager.OnClear遍历所有NPC执行OnClear，事件解除+Token取消+对象池清空",
+      "<!-- [迭代7修复] C1 --> ✅ 双阶段对象池策略：OnClear释放资源+ResetForPool初始化状态，职责不重叠无冗余",
+      "<!-- [迭代7修复] I3 --> ✅ pendingValidation超时5s+原子全量消息+期间增量不触发销毁",
+      "<!-- [迭代7修复] I5 --> ✅ LOD感知插值策略：远距离NPC使用更长外推窗口+平滑缓动",
+      "<!-- [迭代7修复] 遗漏3 --> ✅ Kinematic Rigidbody不响应推挤，符合服务器权威原则",
+      "<!-- [迭代9修复] C2 --> ✅ LOD阈值对照表统一在plan.json lod_alignment，client.json同步更新",
+      "<!-- [迭代9修复] I1 --> ✅ AppearanceComp设计完整（异步加载+CancellationToken+对象池双阶段+fallback）",
+      "<!-- [迭代9修复] I3 --> <!-- [迭代11修复] I5 --> ✅ 对象池预热为async UniTask，_isReady标记+_pendingSpawnQueue处理预热未完成竞态",
+      "<!-- [迭代11修复] I4 --> ✅ 外观加载三级fallback（单部件跳过→body-only→prefab默认mesh），确保NPC不隐形不T-pose"
+    ]
+  }
+}

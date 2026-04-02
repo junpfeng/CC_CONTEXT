@@ -1,0 +1,1 @@
+{"csharpCode": "using UnityEngine; public class Script : UnityEditor.Editor { public static string Main() { try { var netMgr = FL.Gameplay.Manager.NetManager.Instance; if (netMgr == null) return \"NetManager null - game not initialized\"; return \"NetManager exists, IsConnected=\" + netMgr.IsConnected; } catch (System.Exception ex) { return \"Error: \" + ex.Message; } } }"}

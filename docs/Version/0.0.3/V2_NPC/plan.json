@@ -1,0 +1,184 @@
+{
+  "name": "V2_NPC 技术规格",
+  "overview": "将大世界 NPC（BigWorldNpc*）的动画层、FSM 状态机、性别外观加载对齐至小镇 V2 NPC 的成熟实现。纯客户端改动，零协议变更，零服务端变动。在保持速度驱动动画架构的前提下，通过动画层扩展（RightArm/AdditiveBodyExtra/Face）和 FSM 状态补齐（TurnState 完善/ScenarioState/ScheduleIdleState），使 200+ NPC 的大世界场景具备转身过渡、场景点行为、右手持物、面部表情等基础表现力。",
+  "complexity": "complex",
+  "sub_files": [
+    "plan/protocol.json",
+    "plan/flow.json",
+    "plan/server.json",
+    "plan/client.json",
+    "plan/testing.json"
+  ],
+
+  "protocols": [],
+
+  "flows": {
+    "main": [
+      {
+        "name": "NPC 生成（性别 Prefab 选择）",
+        "description": "REQ-001：NPC 生成时根据服务端 Gender 字段选择不同 Prefab",
+        "steps": [
+          "步骤1: 服务端推送 NPC 初始化数据（含 Gender 字段）",
+          "步骤2: BigWorldNpcController 实例化时读取 Gender → 选择 NewNpcPrefab（Male）或 NewNpcPrefab_Female（Female）",
+          "步骤3: AppearanceComp.LoadAppearanceAsync() 异步加载外观资源",
+          "步骤4: 加载完成后切入 IdleState，播放 Idle 动画"
+        ]
+      },
+      {
+        "name": "转身过渡",
+        "description": "REQ-002：朝向差超过阈值时插入 TurnState 过渡动画",
+        "steps": [
+          "步骤1: MoveComp 每帧检测目标朝向与当前朝向夹角",
+          "步骤2: 夹角 >= TurnThresholdDeg(30f) 时 FsmComp 切入 BigWorldNpcTurnState <!-- [迭代3修复] I1: 阈值保留30f -->",
+          "步骤3: TurnState.OnEnter() 播放转身动画（CrossFade），启动 2s 超时计时器",
+          "步骤4: 动画结束（或超时）后 FSM 切回前序状态（Idle 或 Move）"
+        ]
+      },
+      {
+        "name": "场景点行为",
+        "description": "REQ-003：服务端推送 Scenario/ScheduleIdle 时切入对应状态",
+        "steps": [
+          "步骤1: 服务端帧同步推送 NpcState=Scenario",
+          "步骤2: FsmComp.HandleServerState() 映射到 BigWorldNpcScenarioState",
+          "步骤3: ScenarioState.OnEnter() 从 NpcState 携带字段读取动画 Key，调用 AnimationComp 播放",
+          "步骤4: 服务端推送状态变更时 ScenarioState.OnExit() CrossFade 淡出，回到 Idle/Move"
+        ]
+      },
+      {
+        "name": "面部情绪动画",
+        "description": "REQ-005：情绪变化时在 Face 层播放对应面部表情",
+        "steps": [
+          "步骤1: 服务端推送情绪数据，BigWorldNpcEmotionComp 接收并更新内部情绪状态",
+          "步骤2: EmotionComp 触发事件通知 AnimationComp.PlayFaceAnim(emotionKey)",
+          "步骤3: AnimationComp 在 Face 层 CrossFade 播放对应面部 Clip（Angry/Happy/Sad/Idle）",
+          "步骤4: 情绪恢复时回到 Face Idle Clip"
+        ]
+      },
+      {
+        "name": "击中反应",
+        "description": "REQ-008：收到击中事件时 UpperBody 层短暂播放击中动画",
+        "steps": [
+          "步骤1: 伤害系统触发 AnimationComp.OnHit(HitData)",
+          "步骤2: 检查非死亡状态，设置 _isInHitReaction=true，UpperBody 层播放击中 Clip",
+          "步骤3: 约 1s 后 _hitReactionTimer 归零，_isInHitReaction=false，恢复原 UpperBody 动画"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "资源加载失败",
+        "trigger": "YooAsset 加载 AvatarMask / FaceClip / Timeline 失败",
+        "handling": "静默跳过，该层/功能降级为无 Mask 或不播放，不抛异常，不影响其他层"
+      },
+      {
+        "name": "TurnState 超时",
+        "trigger": "转身动画播放超过 2s",
+        "handling": "强制退出 TurnState，切回前序状态，避免 NPC 卡在转身"
+      },
+      {
+        "name": "Gender 字段缺失",
+        "trigger": "NPC 初始化数据无 Gender 字段或值未知",
+        "handling": "回退到男性 Prefab（NewNpcPrefab），不报错"
+      },
+      {
+        "name": "ScenarioState 动画 Key 不存在",
+        "trigger": "服务端携带的动画 Key 在当前动画组中无对应 Clip",
+        "handling": "降级播放 Idle 动画，记录警告日志，不抛异常"
+      }
+    ]
+  },
+
+  "server_design": {
+    "data_models": [],
+    "actors": [],
+    "error_codes": [],
+    "note": "本功能无服务端变动。所有改动限于客户端 BigWorldNpc* 命名空间。"
+  },
+
+  "client_design": {
+    "managers": [],
+    "ui_panels": [],
+    "state_management": "详见 plan/client.json",
+    "error_handling": "所有资源加载失败静默降级；TurnState 2s 超时兜底；Gender 缺失回退男性 Prefab"
+  },
+
+  "testing": {
+    "server": [],
+    "client": [
+      "REQ-001: 女性 NPC 加载 NewNpcPrefab_Female，男性加载 NewNpcPrefab，Gender缺失回退男性",
+      "REQ-002: 朝向差>30°触发TurnState，<30°不触发（<!-- [迭代3修复] I1: 阈值保留30f -->）；TurnState 2s超时强制退出；转身期间移动响应正常",
+      "REQ-003: NpcState=Scenario 切入 ScenarioState，=ScheduleIdle 切入 ScheduleIdleState；状态退出动画淡出无残留",
+      "REQ-004: 初始化后 RightArm/AdditiveBodyExtra 层存在，初始权重0；Play(key, RightArm) 可调用",
+      "REQ-005: Face层绑定FaceAvatarMask，4个面部Clip预加载；情绪变化时Face层切换正确Clip",
+      "REQ-006: PlayTimeline/StopTimeline接口可用；Timeline不存在时降级到Transition",
+      "REQ-007: NpcState=Combat时动画组切换至CombatWpn；Scared/Panicked时AdditiveBody层叠加动画",
+      "REQ-008: OnHit后UpperBody层播放击中动画约1s，死亡状态不触发",
+      "性能: 200 NPC 场景动画CPU增量不超过0.5ms（Profiler验证）"
+    ]
+  },
+
+  "file_list": [
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/BigWorldNpcController.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "REQ-001: 实例化时根据 Gender 选择 NewNpcPrefab 或 NewNpcPrefab_Female"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcFsmComp.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "REQ-002/003/007: 注册 TurnState（完善/确认）、ScenarioState、ScheduleIdleState；重映射战斗/警惕类 serverStateMap 入口"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAnimationComp.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "REQ-004/005/006/008: 扩展动画层（RightArm/AdditiveBodyExtra）、面部Clip预加载、Timeline字典、击中反应逻辑"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAppearanceComp.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "REQ-001（按需）: 若 Prefab 引用维护在 AppearanceComp 中，在此添加女性 Prefab 引用"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcEmotionComp.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "REQ-005: 情绪变化时调用 AnimationComp.PlayFaceAnim()，不重复维护情绪→动画Key映射"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcTurnState.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "REQ-002: 确认并完善 TurnState（TurnThresholdDeg=30f 保留现有值、2s超时、角度单位统一用度数）<!-- [迭代3修复] I1 -->"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcScenarioState.cs",
+      "action": "create",
+      "side": "client",
+      "description": "REQ-003: 场景点行为状态（坐下/驻足/使用设备），映射 NpcState.Scenario"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcScheduleIdleState.cs",
+      "action": "create",
+      "side": "client",
+      "description": "REQ-003: 日程驻留状态，映射 NpcState.ScheduleIdle，播放等待动画"
+    }
+  ],
+
+  "constitution_check": {
+    "server": ["无服务端变动，不适用"],
+    "client": [
+      "✅ 新 Comp 已在现有 Controller.OnInit 中注册（仅修改现有Comp，不新增Comp）",
+      "✅ async UniTaskVoid 方法带 CancellationToken，OnClear 中 Cancel（需在实现时遵循）",
+      "✅ FSM OnExit 必须 Stop 所有使用过的动画层（需在实现时确认）",
+      "✅ MLog 日志禁止 $\"\" 插值，使用 + 拼接",
+      "✅ 不修改任何 TownNpc* 文件",
+      "✅ 新动画层初始权重为 0，仅激活时产生开销",
+      "✅ 角度单位统一用度数，常量加 Deg 后缀（lesson-002）",
+      "✅ 资源加载通过 YooAsset 异步，不阻塞主线程"
+    ]
+  }
+}

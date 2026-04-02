@@ -1,0 +1,42 @@
+task_id	attempt	action	duration_s	compile_ok	review_critical	review_high	decision	reason
+task-01	2	review	349	true	0	1	pending	-
+task-01	2	keep	349	true	0	1	keep	质量达标
+task-01	1	develop+commit	1663	true	0	0	keep	质量达标
+task-02	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-03	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-04	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-08	4	keep	752	true	0	2	keep	质量达标
+task-08	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-09	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-10	2	review	604	true	1	0	pending	-
+task-10	4	review	715	true	0	2	pending	-
+task-10	4	keep	715	true	0	2	keep	质量达标
+task-10	1	develop	2682	true	0	0	keep	无变更
+task-01	2	review	349	true	0	1	pending	-
+task-01	2	keep	349	true	0	1	keep	质量达标
+task-01	1	develop+commit	1663	true	0	0	keep	质量达标
+task-02	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-03	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-04	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-08	4	keep	752	true	0	2	keep	质量达标
+task-08	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-09	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-05	2	review	549	true	0	1	pending	-
+task-05	2	keep	549	true	0	1	keep	质量达标
+task-05	2	review	903	true	0	2	pending	-
+task-05	2	keep	903	true	0	2	keep	质量达标
+task-05	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-01	2	review	349	true	0	1	pending	-
+task-01	2	keep	349	true	0	1	keep	质量达标
+task-01	1	develop+commit	1663	true	0	0	keep	质量达标
+task-02	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-03	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-04	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-08	4	keep	752	true	0	2	keep	质量达标
+task-08	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-09	1	develop(wt)	0	false	-	-	discard	worktree开发异常 exit=1
+task-06	2	review	729	true	0	1	pending	-
+task-06	2	keep	729	true	0	1	keep	质量达标
+task-06	2	review	771	true	0	2	pending	-
+task-06	2	keep	771	true	0	2	keep	质量达标
+task-06	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成

@@ -1,0 +1,113 @@
+{
+  "flows": {
+    "main": [
+      {
+        "name": "P0-Flow-1: BtTickSystem修复后AI管线正常tick",
+        "description": "修复前AI不tick，修复后V2Brain每帧评估状态",
+        "steps": [
+          "步骤1: 大世界场景初始化 → bttick_register.go向场景注册BtTickSystem",
+          "步骤2: 每帧BtTickSystem.Tick() → 遍历大世界所有有BigWorldNpcBehaviorComp的实体",
+          "步骤3: 对每个NPC：V2Brain.Tick(comp) → 按Plan优先级+条件评估是否切换Plan",
+          "步骤4: Plan切换时PlanExecutor.OnPlanChanged() → 更新NpcState字段",
+          "步骤5: SetSync()将NpcState变化推送给AOI内的玩家客户端"
+        ]
+      },
+      {
+        "name": "P0-Flow-2: 日程驱动NPC在路点间移动",
+        "description": "V2Brain的SchedulePlan激活时，NpcMoveSystem驱动路网寻路",
+        "steps": [
+          "步骤1: V2Brain判断当前时间在日程时段内 → 切换到SchedulePlan",
+          "步骤2: PlanExecutor读取BigWorldNpcBehaviorComp.ScheduleWaypointId",
+          "步骤3: NpcMoveSystem发起A*寻路（路网数据）→ 写入NpcState.TargetPos+Path",
+          "步骤4: 每帧NpcMoveSystem推进路径 → NpcState.Position/Heading更新",
+          "步骤5: SetSync()推送NpcSyncState（npc_state=Move, position, heading, move_speed）",
+          "步骤6: 客户端BigWorldNpcMoveComp接收 → 插值移动 → FsmComp切到MoveState",
+          "步骤7: 到达路点后V2Brain切换到IdlePlan，npc_state=Idle"
+        ]
+      },
+      {
+        "name": "P0-Flow-3: 情绪触发与客户端表现（P0基础版）",
+        "description": "服务端推送emotionState，客户端驱动FSM+动画",
+        "steps": [
+          "步骤1: 服务端外部事件（枪声/爆炸）→ BigWorldNpcEmotionSystem.OnEvent()",
+          "步骤2: 计算AOI范围内受影响NPC → 设置EmotionState+MoodLevel+ReactType",
+          "步骤3: V2Brain检测emotion_state>0且mood_level>0.5 → 切换到FleePlan（最高优先级）",
+          "步骤4: NpcState.npc_state=Flee，emotion_state=Scared → SetSync()推送",
+          "步骤5: 客户端BigWorldNpcEmotionComp.HandleEmotionState(1/Scared) → FsmComp切到FleeState",
+          "步骤6: FleeState.OnEnter() → AnimationComp播放Run动画，MoveComp速度×1.5",
+          "步骤7: AnimationComp.SetEmotionAnim(1) → Face层播放恐惧表情"
+        ]
+      },
+      {
+        "name": "P1-Flow-1: 情绪完整衰减链路",
+        "description": "情绪自动衰减，V2Brain跟随恢复正常行为",
+        "steps": [
+          "步骤1: BigWorldNpcEmotionSystem每1000ms tick",
+          "步骤2: moodLevel -= decayRate * dt（decayRate来自BigWorldNpcTypeCfg）",
+          "步骤3: moodLevel <= 0 → EmotionState=None，FleeAttrFlags=0",
+          "步骤4: V2Brain下一次Tick：FleePlan条件不满足 → 切回SchedulePlan/WanderPlan",
+          "步骤5: npc_state=Idle/Move，emotion_state=0 → SetSync()推送",
+          "步骤6: 客户端EmotionComp.HandleEmotionState(0) → FsmComp回到Idle/MoveState",
+          "步骤7: AnimationComp Face层回到Idle Clip"
+        ]
+      },
+      {
+        "name": "P1-Flow-2: LOD切换流程",
+        "description": "玩家移动导致NPC距离变化，LOD分级动态调整",
+        "steps": [
+          "步骤1: BigWorldNpcManager每帧检测玩家与每个NPC的距离²",
+          "步骤2: 距离²< 900 → LOD=0（Near）；900-3600 → LOD=1（Mid）；>3600 → LOD=2（Far）",
+          "步骤3: LOD变化时调用controller.LodComp.SetLod(newLevel)",
+          "步骤4: LodComp通知AnimationComp调整混合精度（Far=禁用CrossFade）",
+          "步骤5: LodComp通知MoveComp调整插值（Far=跳过插值直接SetPosition）",
+          "步骤6: [迭代3修复 C1] 服务端BigWorldNpcUpdateSystem在tick时遍历该NPC的AOI玩家列表，取所有玩家与该NPC距离²的最小值minDist2，按 minDist2<900→Near(500ms) / 900-3600→Mid(1500ms) / >3600→Far(3000ms) 自主分档决定tick频率，不依赖客户端上报LOD值。多玩家场景下以最近玩家距离为准（保证最近玩家看到的NPC得到Near频率更新）。"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "[迭代3修复 遗漏2] FleeState服务端退出完整同步链路",
+        "trigger": "情绪衰减完成，服务端结束Flee状态",
+        "description": "P1-Flow-1步骤5之后的完整退出同步",
+        "steps": [
+          "服务端 moodLevel<=0 → EmotionState=None, FleeAttrFlags=0（bit0清零）",
+          "V2Brain下一帧 FleePlan条件不满足（emotion_state=0）→ 切回SchedulePlan/WanderPlan",
+          "npc_state切换为 Idle(0) 或 Move(1)，emotion_state=0 → SetSync()同帧推送（两字段必须同帧，见protocol.json field_relationships）",
+          "客户端 BigWorldNpcEmotionComp.HandleEmotionState(0) → FsmComp.SwitchToServerState(npc_state)",
+          "FleeState.OnExit() → Stop Base层Run动画，RunSpeed恢复正常，flee_attr_flags=0（bit0清零不触发任何逻辑）",
+          "客户端退出标志：npc_state变为非Flee值（0=Idle或1=Move），非emotion_state归零（两者同帧，客户端监听npc_state即可）"
+        ]
+      },
+      {
+        "name": "BtTickSystem重复注册",
+        "trigger": "大世界场景重载或多实例同时初始化",
+        "handling": "注册前检查IsRegistered()，已注册则跳过（幂等），记录Warning日志"
+      },
+      {
+        "name": "V2Brain配置文件缺失",
+        "trigger": "bigworld_npc_brain.json未找到",
+        "handling": "服务端panic并打印ERR_BIGWORLD_NPC_BRAIN_CONFIG_MISSING，NPC降级为简单Wander行为（内置兜底Plan）"
+      },
+      {
+        "name": "LOD快速切换（TurnState残留）",
+        "trigger": "玩家快速移动导致NPC在Far→Near瞬间切换时，NPC正在TurnState",
+        "handling": "LodComp.SetLod()变化时：先ForceIdle()清除旧状态，再触发LOD更新"
+      },
+      {
+        "name": "情绪State进入时MoveState残留动画",
+        "trigger": "NPC移动中收到Scared事件，MoveState动画未清理就切FleeState",
+        "handling": "FsmComp切换时标准OnExit流程，MoveState.OnExit()停止Move动画；FleeState.OnEnter()重新播放Run动画"
+      },
+      {
+        "name": "Animancer共享层冲突（情绪+击中反应）",
+        "trigger": "NPC同时处于情绪状态和击中反应，两者都使用UpperBody/Face层",
+        "handling": "情绪优先级高于击中反应（_hasHighPriorityOverride=true），击中反应结束时检查情绪是否仍激活再决定是否归零层（lesson-007）"
+      },
+      {
+        "name": "路网A*寻路失败",
+        "trigger": "日程目标路点不可达",
+        "handling": "PlanExecutor：寻路失败后切换到IdlePlan，记录Warning：'schedule waypoint unreachable: ' + waypointId"
+      }
+    ]
+  }
+}

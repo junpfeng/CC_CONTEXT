@@ -1,0 +1,49 @@
+{
+  "testing": {
+    "server": [
+      "P0-S1: BtTickSystem注册验证 — 大世界场景启动后，grep日志确认'BtTickSystem registered for BigWorld'",
+      "P0-S2: V2Brain Plan切换日志 — 观察NPC entity日志，确认WanderPlan/SchedulePlan按时间切换",
+      "P0-S3: 日程驱动移动 — GM命令触发NPC移动到指定路点，服务端NpcState.TargetPos写入正确",
+      "P0-S4: go build ./... 编译通过，无新增警告",
+      "P1-S1: 情绪触发验证 — GM命令触发枪声事件，周边50m内NPC emotionState=Scared且moodLevel>0",
+      "P1-S2: 情绪衰减验证 — 触发后等待30s（默认衰减速率），确认moodLevel归零且emotionState=None",
+      "P1-S3: FleePlan切换验证 — emotionState=Scared后V2Brain日志确认切换到FleePlan",
+      "P1-S4: NPC类型配置加载 — 服务启动时BigWorldNpcTypeCfg各类型参数正确读取（日志验证）",
+      "P1-S5: 50+NPC性能基准 — AOI内50个NPC同帧tick，单帧CPU<2ms（服务端Profile验证）",
+      "P1-S6: [迭代3修复 C3] AOI进入快照验证 — GM命令让某NPC处于Flee状态(emotion_state=Scared,npc_state=Flee)，然后另一玩家进入该NPC的AOI；确认该玩家立即收到含emotion_state=1/npc_state=2的NpcSyncState，而非等待下一次SetSync()。服务端日志确认AOI enter时推送了完整快照。",
+      "P1-S7: [迭代3修复 遗漏2] FleeState退出同步验证 — 触发情绪后等待衰减归零，日志确认emotion_state=0和npc_state=Idle/Move在同一帧SetSync()中推送（timestamp相同），客户端无中间状态闪烁。"
+    ],
+    "client": [
+      "P0-C1: FSM新状态注册 — MCP脚本注入NpcState.Flee，反射确认FsmComp.CurrentState=BigWorldNpcFleeState",
+      "P0-C2: 逃跑动画表现 — Flee状态下截图确认NPC高速跑动，方向远离威胁源",
+      "P0-C3: Nervous状态 — MCP注入NpcState.Nervous，确认WalkSpeed降低+AdditiveBody层紧张动画",
+      "P0-C4: Curious状态 — MCP注入NpcState.Curious，确认NPC停步+Face层好奇表情",
+      "P0-C5: emotionState=0时恢复 — 注入emotionState=0后FSM回到Idle/MoveState，Face层归零",
+      "P0-C6: TurnState不被情绪切换打断 — 转身动画期间注入Nervous，确认TurnState完成后才切换",
+      "P0-C7: OnExit动画层清理 — FSM状态切换后用MCP脚本反射检查Flee/Nervous使用的层权重归零",
+      "P0-C8: 编译验证 — MCP console-get-logs确认无CS编译错误",
+      "P1-C1: Angry状态表现 — MCP注入NpcState.Angry，截图确认面部+肢体动画",
+      "P1-C2: LOD切换 — 玩家移动到60m外，反射确认LodComp.LodLevel=2，AnimationComp混合禁用",
+      "P1-C3: LOD性能 — 50个NPC中30个Far级，帧率对比无LOD基准降低<5%",
+      "P1-C4: LOD-Near恢复 — 玩家靠近LOD2 NPC到30m内，LodComp自动切回LOD0，动画恢复正常",
+      "P1-C5: 多NPC类型外观 — 同场景Pedestrian/Vendor/Police各至少1只，截图确认外观差异",
+      "P1-C6: CancellationToken — OnClear后等待1帧，反射确认无UniTask延续运行（无空指针异常）",
+      "P1-C7: Animancer层优先级 — 情绪状态+击中反应同时触发，确认情绪层不被击中反应覆盖（lesson-007）",
+      "P1-C8: [迭代3修复 C3] AOI进入客户端快照 — 客户端先进入大世界，GM让一个NPC进入Flee状态，然后登出再重新登入（模拟新玩家进入AOI）；截图确认NPC立即显示逃跑动画，而非先显示Idle再切换到Flee。",
+      "P1-C9: [迭代3修复 I6] LOD初始化不依赖服务端 — BigWorldNpcTypeNtf收到后，反射确认LodComp.LodLevel由本地距离计算（非来自消息字段）。"
+    ],
+    "p0_smoke_test_sequence": [
+      "1. 启动服务器 → 确认BtTickSystem注册日志",
+      "2. 客户端MCP登录大世界 → 截图确认NPC正常行走",
+      "3. MCP脚本注入NpcState.Flee到一个NPC → 截图确认逃跑动画",
+      "4. 注入NpcState.Idle → 截图确认回到待机",
+      "5. 检查console-get-logs无CS错误，服务端无goroutine panic"
+    ],
+    "regression_checks": [
+      "现有IdleState/MoveState/TurnState/ScheduleIdleState/ScenarioState行为不变",
+      "BigWorldNpcManager对象池回收正常（无内存泄漏）",
+      "大世界其他系统（交通/动物）不受影响",
+      "小镇TownNpc*文件无任何代码变动（grep确认）"
+    ]
+  }
+}

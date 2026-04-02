@@ -1,0 +1,196 @@
+{
+  "title": "大世界V2 NPC系统 - 测试要点详情",
+
+  "testing": {
+    "server": [
+      {
+        "category": "Pipeline注册",
+        "tests": [
+          "BigWorld Pipeline配置注册后，CreateNpc返回的SceneNpcComp持有非nil的Pipeline实例",
+          "BigWorld维度配置包含4个维度且顺序正确（engagement→expression→locomotion→navigation）",
+          "修改BigWorld Pipeline配置不影响Town/Sakura Pipeline配置（隔离性）",
+          "Pipeline.Tick()正确按顺序调用各维度Handler"
+        ]
+      },
+      {
+        "category": "ExtHandler",
+        "tests": [
+          "createExt(SceneType_BigWorld)返回BigWorldSceneNpcExt实例",
+          "OnNpcCreated正确注入感知插件（StateSensor/EventSensor/DistanceSensor/ScheduleSensor）",
+          "OnNpcCreated正确加载V2_BigWorld日程配置",
+          "OnNpcDestroyed正确清理所有感知插件注册",
+          "BigWorldExtHandler不依赖Town/Sakura的任何import"
+        ]
+      },
+      {
+        "category": "NPC生成/回收",
+        "tests": [
+          "Spawner在玩家周围正确生成NPC（数量符合密度配置）",
+          "NPC数量不超过MaxCount上限",
+          "每帧生成数不超过SpawnBatchSize（防突刺）",
+          "NPC离开DespawnRadius后经DespawnDelay秒被正确回收",
+          "反复CreateNpc/DestroyNpc 100次后state池和NpcMap大小恢复（无泄漏）",
+          "state.Acquire()/Release()对象池正确复用（无重复分配）",
+          "生成点使用路网节点，Y坐标经Raycast修正"
+        ]
+      },
+      {
+        "category": "寻路",
+        "tests": [
+          "NavigationHandler使用大世界路网A*寻路返回有效路径",
+          "寻路耗时不超过3ms（利用LRU缓存）",
+          "路径终点追加实际目标点（防syncNpcMovement死循环）",
+          "Y坐标通过Grounds层(layer 6)Raycast修正",
+          "寻路失败时NPC回退Idle状态，不重试同一目标",
+          "<!-- [迭代3修复] I2 --> 异步续算超过10帧（maxContinuationFrames）后正确回退Idle",
+          "新寻路请求自动取消前一个未完成的异步请求",
+          "路网不连通时返回nil路径并记录错误日志"
+        ]
+      },
+      {
+        "category": "日程系统",
+        "tests": [
+          "日程配置以V2_BigWorld前缀加载，与Town日程不冲突",
+          "模拟游戏内时间推进，NPC行为状态正确切换（巡逻→休息→聚集）",
+          "日程切换时NPC先完成当前移动段再切换（无瞬移）",
+          "日程配置缺失时使用默认patrol行为并记录错误"
+        ]
+      },
+      {
+        "category": "AI LOD",
+        "tests": [
+          "近距NPC（<100m）每帧Tick",
+          "中距NPC（100-200m）每3帧Tick",
+          "远距NPC（>200m）每10帧Tick",
+          "50个NPC同时存在时Pipeline总Tick耗时<2ms"
+        ]
+      },
+      {
+        "category": "状态同步",
+        "tests": [
+          "NPC状态变化后SetSync()正确标脏",
+          "NpcDataUpdate增量同步只推送变化的字段",
+          "全量同步（is_all=true）包含所有组件数据",
+          "BehaviorState在sync层统一推导，各Handler不直接写入",
+          "heading使用度数，与客户端Quaternion.Euler匹配"
+        ]
+      },
+      {
+        "category": "边界条件",
+        "tests": [
+          "玩家快速移动时Spawner正确跟随（生成/回收及时）",
+          "多个玩家AOI重叠时NPC不重复创建",
+          "<!-- [迭代3修复] I1 --> 玩家A离开但玩家B仍在despawn_radius内时NPC不被回收",
+          "服务器重启后NPC状态正确重建",
+          "NPC在海洋水面上方（Y<50）被标记InWater",
+          "<!-- [迭代3修复] C2 --> FindSpawnPosition连续10次失败后正确降级到safeSpawnPoints"
+        ]
+      },
+      {
+        "category": "<!-- [迭代3修复] C1/N3 --> NPC与交通载具共存",
+        "tests": [
+          "NPC在载具行驶路段上步行时不穿模（碰撞体物理推开生效）",
+          "NPC前方5m检测到载具时暂停等待，载具通过后恢复移动",
+          "路口处NPC在红灯时等待，绿灯时通行",
+          "NPC与载具同时到达路口时NPC让行不死锁（参考feedback_traffic_opposite_filter）"
+        ]
+      }
+    ],
+
+    "client": [
+      {
+        "category": "对象池",
+        "tests": [
+          "预热后Spawn不产生GC Alloc（Profile确认）",
+          "Despawn时NPC正确回收到对象池（不Destroy GameObject）",
+          "对象池复用时Controller状态正确重置",
+          "对象池耗尽时新NPC创建排队等待"
+        ]
+      },
+      {
+        "category": "Controller生命周期",
+        "tests": [
+          "OnInit正确注册所有Comp（TransformComp/MoveComp/FsmComp/AnimationComp）",
+          "OnClear正确解除所有DataSignal监听",
+          "OnClear调用CancellationTokenSource.Cancel()取消异步任务",
+          "Controller不引用S1Town模块的任何类型"
+        ]
+      },
+      {
+        "category": "FSM状态机",
+        "tests": [
+          "Idle→Move→Run→Turn状态切换无残留动画层",
+          "每个State的OnExit正确Stop所有使用过的动画层",
+          "状态枚举独立于TownNpcFsmComp",
+          "FSM状态由服务器AnimState驱动，客户端不自主决策",
+          "角度阈值使用度数，无弧度混用（TurnState→MoveState转换条件）"
+        ]
+      },
+      {
+        "category": "动画",
+        "tests": [
+          "Animancer正确播放Idle/Walk/Run/Turn动画clip",
+          "动画速度与移速归一化匹配（不出现视觉冻结或过快）",
+          "播放clip时检查isLooping设置（FBX可能未勾选Loop）",
+          "HiZCulling生效时暂停Animancer图，回到视野后恢复正常",
+          "动画clip缺失时回退Idle并记录MLog.Warn"
+        ]
+      },
+      {
+        "category": "移动平滑",
+        "tests": [
+          "TransformSnapshotQueue插值无抖动",
+          "网络延迟200ms时移动仍平滑（插值缓冲足够）",
+          "NPC到达目标点时平滑减速停止（无突然停止）"
+        ]
+      },
+      {
+        "category": "LOD",
+        "tests": [
+          "<!-- [迭代9修复] C2: LOD阈值与plan.json lod_alignment对齐 --> 近距NPC（FULL <50m）每帧更新动画，完整渲染",
+          "中距NPC（REDUCED 50-150m）每3帧更新动画，简化渲染",
+          "远距NPC（MINIMAL >150m）暂停动画，HiZCulling裁剪",
+          "LOD切换时无视觉跳变"
+        ]
+      },
+      {
+        "category": "断线重连",
+        "tests": [
+          "<!-- [迭代3修复] I6 --> 重连后大世界NPC通过diff更新（pendingValidation→对比entityId→增量更新，无集体闪烁）",
+          "重连后NPC状态与服务器一致（位置/动画/情绪）",
+          "重连期间无崩溃或空引用异常"
+        ]
+      },
+      {
+        "category": "性能",
+        "tests": [
+          "同屏20个NPC时帧率>25fps（目标设备）",
+          "NPC创建不造成帧率突刺（分帧创建生效）",
+          "无MLog.Error或异常日志输出（除预期的配置缺失Warning）"
+        ]
+      }
+    ],
+
+    "integration": [
+      {
+        "category": "端到端",
+        "tests": [
+          "玩家进入大世界→NPC自动生成→看到NPC自主巡逻→玩家离开→NPC被回收",
+          "多个玩家在大世界不同区域→各自AOI范围内NPC独立运行",
+          "服务器Pipeline Tick + 客户端表现全链路：决策→状态同步→动画播放",
+          "大世界NPC与小镇NPC同时存在（不同场景）互不影响"
+        ]
+      },
+      {
+        "category": "MCP验证（客户端视觉表现）",
+        "tests": [
+          "通过Unity MCP启动Play模式→登录→进入大世界场景",
+          "截图确认NPC正确生成并显示在场景中",
+          "观察NPC自主移动（巡逻路径）并截图确认动画播放正常",
+          "触发NPC感知反应（靠近NPC）并截图确认表情变化",
+          "移动到NPC生成边界外→确认NPC被回收→回到范围内→确认NPC重新生成"
+        ]
+      }
+    ]
+  }
+}

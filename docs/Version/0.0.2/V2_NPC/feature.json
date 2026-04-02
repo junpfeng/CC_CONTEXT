@@ -1,0 +1,321 @@
+{
+  "name": "大世界 V2 NPC 系统",
+  "overview": "基于小镇 V2 NPC 的正交维度 Pipeline 架构，在大世界场景实现完整的 NPC 系统。共享核心框架（OrthogonalPipeline、V2Brain、PlanHandler），但在配置、扩展处理器、生成策略上完全独立。包含行人路网构建、巡逻路线配置、AOI 驱动的均匀分布策略，以及小地图 NPC 显示功能。",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "category": "核心架构",
+      "title": "Pipeline 注册与 BigWorld ExtHandler 完善",
+      "description": "完善已有的 BigWorldExtHandler，接入巡逻路线管理和场景点清理。当前 scene_impl.go 中 InitLocomotionManagers 对 patrolQuerier 传 nil，需加载巡逻路线并注入 PatrolRouteManager。BigWorldExtHandler.OnNpcDestroyed 需补充释放巡逻路线和场景点占用的逻辑（参考 TownNpcExtHandler）。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "scene_impl.go 大世界初始化时 InitLocomotionManagers 的 patrolQuerier 参数不再为 nil，传入有效的 PatrolRouteManager",
+        "BigWorldExtHandler.OnNpcDestroyed 释放 patrolNpcCleaner 和 scenarioNpcCleaner 资源",
+        "Pipeline 4 个维度（engagement/expression/locomotion/navigation）全部正常驱动，locomotion 维度的 patrol handler 可用",
+        "make build 编译通过，不影响小镇/樱花场景的 Pipeline 注册"
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "category": "核心架构",
+      "title": "AOI 驱动的 NPC 生成与回收",
+      "description": "改进现有 BigWorldNpcSpawner，将生成点来源从 GetAllPointPositions()（包含车道）切换为仅 footwalk 类型路点。保持已有的距离检测生成/回收机制（SpawnRadius/DespawnRadius）和分帧批量限制（SpawnBatchSize），不引入新的 AOI 系统。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "initSpawnPoints 仅从 footwalk 类型子路网获取候选生成点，不再使用 GetAllPointPositions",
+        "NPC 不会生成在机动车道上",
+        "每帧生成数量不超过 SpawnBatchSize，无帧率突刺",
+        "玩家离开后 NPC 按 DespawnDelay 延迟回收",
+        "NPC 总数不超过 MaxCount 上限"
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "category": "路网系统",
+      "title": "行人路网数据构建",
+      "description": "大世界行人路网数据完全缺失，需从零构建。方案 A 先行：编写脚本从车辆路网 road_traffic_miami.json（50K 路点）派生行人路网，沿车道法线偏移 3-5m 生成人行道路点，输出为 miami_ped_road.json，格式与 road_point.json 一致（含 footwalk 类型标记）。按区域划分为多个 WalkZone 子路网（downtown_walk/park_walk/suburb_walk/beach_walk/commercial_walk）。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "生成 miami_ped_road.json，格式与现有 road_point.json 完全一致",
+        "所有子路网 type 字段为 footwalk",
+        "路点坐标范围在大世界地图范围 -4096~4096 内",
+        "路点 Y 坐标经过地面修正（不使用车辆路网原始 Y 值）",
+        "至少包含 5 个 WalkZone 分区，每个分区为独立子路网",
+        "各分区内路网连通（A* 可达）",
+        "脚本可重复运行，输出稳定"
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "category": "路网系统",
+      "title": "场景配置接入行人路网",
+      "description": "在 scene.xlsx 中为 Miami 大世界场景补填 pedWaypointFile 字段，指向新生成的行人路网文件。scene_impl.go 的 initRoadNetwork 已支持 pedWaypointFile 优先加载，无需改代码，只需配置表补全。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "scene.xlsx 中 Miami 场景（id=16）的 pedWaypointFile 字段填入正确的行人路网文件名",
+        "打表后服务器启动能正确加载大世界行人路网",
+        "MapRoadNetworkMgr 中可查询到 footwalk 类型的子路网"
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "category": "路网系统",
+      "title": "按类型过滤的路网查询接口",
+      "description": "现有 Map.FindNearestPointID 和 Map.FindPath 遍历所有子路网不区分 type，NPC 行人寻路需按 footwalk 类型过滤。新增 FindNearestPointIDByType(pos, type) 和 FindPathByType(startID, endID, type) 方法，内部维护 roadsByType 索引（Init 时构建）。保持原有无类型方法向后兼容。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "Map 结构体新增 roadsByType map[RoadNetworkType][]*RoadNetwork 索引字段",
+        "Init 时自动构建 roadsByType 索引",
+        "FindNearestPointIDByType 仅在指定 type 的子路网中查找最近路点",
+        "FindPathByType 仅在指定 type 的子路网中执行 A* 寻路",
+        "原有 FindNearestPointID 和 FindPath 行为不变（向后兼容）",
+        "RoadNetQuerier 接口按需扩展，不破坏现有实现"
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "category": "核心玩法",
+      "title": "locomotion + navigation 维度驱动 NPC 沿路网移动",
+      "description": "NPC 由 V2 Pipeline 的 locomotion 维度（patrol handler）驱动沿行人路网移动。PatrolHandler.OnTick 设置目标 → NpcState.SetMoveTarget → syncNpcMovement 桥接到 NpcMoveComp → MoveEntityViaRoadNet（footwalk 路网 A*）。navigation 维度处理实际寻路和移动插值。需确保路网 A* 调用使用 FindPathByType(footwalk)，不误入车道。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "NPC 能沿 footwalk 路网自主移动，不走机动车道",
+        "移动路径由 A* 自动规划，表现自然",
+        "路网不可达时降级处理（NavMesh → 直线），不崩溃，日志告警",
+        "NPC 移动速度由 goSpeed × patrolSpeedScale 控制",
+        "多个 NPC 同时移动不卡顿（路网查询性能满足 50 NPC 同时寻路）"
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "category": "核心玩法",
+      "title": "巡逻路线系统接入",
+      "description": "复用已有 ai/patrol/ 包的完整巡逻路线系统。步骤：1) 场景初始化加载巡逻路线 JSON 并注入 PatrolRouteManager；2) 创建大世界巡逻路线 JSON 数据（基于行人路网自动生成环形路线，每条 8-15 节点，15-25 条路线覆盖各 WalkZone）；3) PatrolRoute 结构体新增 WalkZone 字段。巡逻节点为稀疏关键点，节点间实际路径由 footwalk 路网 A* 自动规划。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "bin/config/ai_patrol/bigworld/ 目录下有 15-25 条巡逻路线 JSON 文件",
+        "每条路线 8-15 个节点，节点坐标在 footwalk 路网连通区域内",
+        "PatrolRoute 结构体和 JSON 反序列化支持 walkZone 字段",
+        "PatrolRouteManager 能正确加载并管理大世界巡逻路线",
+        "NPC 能被分配到巡逻路线并沿路线循环移动",
+        "路线 desiredNpcCount 上限生效，满员不再分配",
+        "AssignNpc 从离 NPC 最近的节点开始，不同 NPC 起点自然错开"
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "category": "核心玩法",
+      "title": "NPC 均匀分布与 WalkZone 配额",
+      "description": "新增 npc_zone_quota.json 配置分区密度权重和硬上限。每 5 秒执行配额计算：收集所有玩家 AOI 覆盖的 WalkZone 集合 → 按 densityWeight 归一化分配 totalNpcBudget → 各分区 NPC 数低于配额触发生成、高于配额+recycleHysteresis 标记可回收。未被覆盖的分区配额为 0。生成位置在巡逻路线节点上（非固定 birthPos），由负载最低的路线决定。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "npc_zone_quota.json 配置正确加载，包含 totalNpcBudget/recycleHysteresis/zones",
+        "配额计算仅对玩家 AOI 覆盖的 WalkZone 分配预算",
+        "各分区 NPC 数不超过 maxNpc 硬上限",
+        "recycleHysteresis 防止频繁生成/回收抖动",
+        "NPC 生成在巡逻路线节点上，立即进入巡逻状态",
+        "市中心密度高于郊区（densityWeight 生效）",
+        "玩家移动到新区域时 NPC 自然出现在路网上"
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "category": "客户端表现",
+      "title": "BigWorldNpcController 基础动画",
+      "description": "完善已有的 BigWorldNpcController，确保 Idle/Walk/Run 动画表现正常。当前 Controller 已有 BigWorldNpcAnimationComp 和 BigWorldNpcFsmComp，需确保服务器推送的状态同步（MonsterTransformUpdate/ServerAnimStateDataUpdate）能正确驱动动画状态切换。移动插值使用 BigWorldNpcMoveComp（参考 TransformSnapshotQueue 模式）。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "NPC Idle 状态播放待机动画",
+        "NPC 移动时根据速度切换 Walk/Run 动画",
+        "动画过渡平滑，无跳帧或卡顿",
+        "NPC 位置插值平滑，无瞬移现象",
+        "NPC 朝向跟随移动方向自然旋转",
+        "NPC 被 AOI 回收时正确清理资源（动画/组件/引用）"
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "category": "调试工具",
+      "title": "GM 命令手动生成 NPC",
+      "description": "支持通过 GM 命令 /ke* gm bw_npc spawn {cfgId} 在玩家当前位置附近手动生成指定配置的大世界 NPC，用于调试验证。生成的 NPC 与 AOI 自动生成的 NPC 走同一套 Pipeline 和表现逻辑。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "GM 命令 /ke* gm bw_npc spawn {cfgId} 能在玩家附近成功生成 NPC",
+        "生成的 NPC 由 V2 Pipeline 正常驱动",
+        "cfgId 无效时返回错误提示，不崩溃",
+        "生成的 NPC 纳入 AOI 管理，超出范围正常回收"
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "category": "核心玩法",
+      "title": "expression 维度与日程系统",
+      "description": "NPC 通过 V2 日程系统驱动作息行为。日程模板存放于 config/ai_schedule/bigworld/，定义时间段内的行为类型（巡逻、驻足、休息等）。expression 维度处理 NPC 情绪表达（idle/threat_react/social_react），由 V2Brain 配置的 bigworld_ 前缀 JSON 驱动。巡逻作为日程的一种行为类型（behaviorType=10），通过 PatrolHandler 驱动。",
+      "priority": "P1",
+      "side": "server",
+      "acceptance_criteria": [
+        "大世界 NPC 日程模板 JSON 文件存在且格式正确",
+        "NPC 按日程时间表切换行为（巡逻/驻足/休息）",
+        "日程时间结束时 PatrolHandler.OnExit 正确释放路线和节点占用",
+        "expression 维度正常驱动情绪表达状态切换",
+        "日程配置与小镇完全隔离（V2_BigWorld_ 前缀标识）"
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "category": "核心玩法",
+      "title": "engagement 维度基础警戒",
+      "description": "engagement 维度实现基础警戒行为：NPC 对玩家接近有反应（如注视、转头），不实现战斗状态机。复用 V2 Pipeline 已注册的 BigWorld engagement 维度（none/pursuit handler），通过 bigworld_ 前缀的 V2Brain 配置控制状态转移条件。",
+      "priority": "P1",
+      "side": "both",
+      "acceptance_criteria": [
+        "玩家接近 NPC 时，NPC 有注视/警戒反应",
+        "NPC 不主动发起战斗或社交行为",
+        "警戒状态不干扰 locomotion 维度的正常移动（维度正交性）",
+        "客户端收到 engagement 状态变化后播放对应表现"
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "category": "UI交互",
+      "title": "大世界小地图 NPC 显示",
+      "description": "大世界小地图新增 NPC 追踪图例按钮（LegendType ID=127），点击后在小地图上显示/隐藏 NPC 位置标记。默认隐藏。NPC 使用统一人形图标（无个人头像），浅蓝色区分小镇 NPC。不显示边缘指示器（edgeDisplay=0）。新增 MapBigWorldNpcLegend 数据类，MapLegendControl 中新增 ToggleShowAllBigWorldNpc 方法，监听 NPC 生成/回收事件自动增删图例。图例按钮仅在大世界场景显示。",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": [
+        "icon.xlsx LegendType_c 表新增大世界 NPC 图例配置（ID 不冲突）",
+        "大世界场景中小地图显示 NPC 追踪图例按钮",
+        "小镇场景中不显示该按钮",
+        "点击按钮 Toggle 显示/隐藏所有 AOI 内大世界 NPC 标记",
+        "默认隐藏状态",
+        "NPC 被 AOI 回收时自动移除对应图例，不残留",
+        "NPC 生成时若 Toggle 开启则自动添加图例",
+        "使用统一人形图标，不逐个加载头像资源",
+        "不显示边缘指示器（屏幕外方向箭头）"
+      ]
+    },
+    {
+      "id": "REQ-014",
+      "category": "配置数据",
+      "title": "NPC 配置表扩展",
+      "description": "在 NPC 配置表中新增 patrolRouteIds（候选巡逻路线 ID 列表）和 patrolSpeedScale（步行速度缩放因子）字段。速度计算为 goSpeed × patrolSpeedScale，不另设 baseSpeed。BigWorldNpcSpawner 生成 NPC 时根据 patrolRouteIds 选择负载最低的路线分配。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "NPC 配置表新增 patrolRouteIds 和 patrolSpeedScale 字段",
+        "打表后服务器能正确读取新字段",
+        "patrolSpeedScale 默认值为 1.0",
+        "生成时从 patrolRouteIds 中选择负载最低且未满员的路线",
+        "NPC 移动速度 = goSpeed × patrolSpeedScale"
+      ]
+    },
+    {
+      "id": "REQ-015",
+      "category": "配置数据",
+      "title": "V2Brain 大世界决策配置",
+      "description": "为大世界 NPC 创建独立的 V2Brain 决策配置 JSON 文件（bigworld_ 前缀），放置于 config/ai_decision_v2/ 目录。4 个维度各一份配置，定义大世界 NPC 的行为计划和状态转移规则。与小镇配置完全隔离。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "config/ai_decision_v2/ 目录下存在 bigworld_ 前缀的 4 维度配置文件",
+        "配置文件格式符合 V2Brain BrainConfig 结构",
+        "条件表达式编译无错误",
+        "大世界 NPC 使用 bigworld_ 配置，小镇 NPC 不受影响",
+        "locomotion 维度包含 patrol 计划的状态转移"
+      ]
+    },
+    {
+      "id": "REQ-016",
+      "category": "客户端表现",
+      "title": "巡逻节点到达行为表现",
+      "description": "NPC 到达巡逻节点时，根据 behaviorType 执行对应表现（驻足观景、坐下休息等）。服务端通过 NpcPatrolNodeArriveNtf 推送节点到达事件和行为类型，客户端播放对应动画。停留时长由节点 duration 控制，到期后自动前往下一节点。",
+      "priority": "P1",
+      "side": "both",
+      "acceptance_criteria": [
+        "NPC 到达有 duration 的节点时停下并播放对应行为动画",
+        "停留时长与配置一致（ms 精度）",
+        "停留结束后自动前往下一节点，过渡自然",
+        "duration=0 的节点不停留，直接通过"
+      ]
+    }
+  ],
+  "interaction_design": {
+    "description": "玩家进入大世界后，NPC 由 AOI 自动管理，无需玩家主动操作。NPC 在行人路网上自主移动，按日程执行巡逻和场景行为。玩家可通过小地图图例按钮查看 NPC 分布。",
+    "controls": [
+      "小地图 NPC 追踪按钮：点击 Toggle 显示/隐藏大世界 NPC 位置标记",
+      "GM 调试命令：/ke* gm bw_npc spawn {cfgId} 手动生成指定 NPC"
+    ],
+    "flows": [
+      "正常流程：玩家进入大世界 → 服务器按 AOI + WalkZone 配额生成 NPC → NPC 分配巡逻路线 → 沿 footwalk 路网移动 → 客户端播放动画",
+      "AOI 回收：NPC 离开所有玩家 DespawnRadius → 延迟回收 → 客户端销毁实体 → 释放巡逻路线占用",
+      "区域切换：玩家移动到新 WalkZone → 配额重新计算 → 新区域补充 NPC → 旧区域超额 NPC 标记可回收",
+      "小地图查看：点击 NPC 图例按钮 → 显示所有 AOI 内 NPC 位置 → 再次点击关闭"
+    ]
+  },
+  "technical_constraints": [
+    {
+      "category": "性能",
+      "description": "NPC 分帧生成，每帧最多创建 SpawnBatchSize 个，避免帧率突刺。50 个 NPC 同时寻路的路网查询延迟需在 1ms 内。"
+    },
+    {
+      "category": "性能",
+      "description": "客户端小地图 NPC 图标默认隐藏，开启时使用统一图标降低 Draw Call，不显示边缘指示器减少渲染开销。"
+    },
+    {
+      "category": "架构",
+      "description": "orthogonal_pipeline.go 零改动。大世界扩展处理器、配置、路网与小镇完全隔离，互不影响。BigWorldNpcController 与 TownNpcController 平级独立，不继承。"
+    },
+    {
+      "category": "架构",
+      "description": "BigWorldExtHandler 不 import 小镇的任何扩展处理器代码。大世界 V2Brain 配置使用 bigworld_ 前缀与小镇配置物理隔离。"
+    },
+    {
+      "category": "网络",
+      "description": "NPC 状态通过现有 NetEntity 协议同步到客户端，不新增网络协议。巡逻节点到达事件复用 NpcPatrolNodeArriveNtf。"
+    },
+    {
+      "category": "资源",
+      "description": "行人路网从车辆路网派生（方案 A），后续美术可补充公园/广场等非车道区域。巡逻路线 JSON 由脚本从路网自动生成，非手工配置。"
+    },
+    {
+      "category": "性能",
+      "description": "均匀分布配额每 5 秒计算一次（非每帧），WalkZone AABB 与 AOI 相交测试轻量。recycleHysteresis 防止频繁生成/回收抖动。"
+    }
+  ],
+  "dependencies": [
+    "V2 Pipeline 引擎（orthogonal_pipeline.go）：复用，零改动",
+    "V2Brain 决策系统（v2brain/brain.go）：复用，新增 bigworld_ 前缀配置",
+    "ai/patrol/ 巡逻系统：复用 PatrolRouteManager/PatrolHandler，新增 WalkZone 字段",
+    "BigWorldNpcSpawner：已有基础实现，需改造生成点来源和配额策略",
+    "BigWorldNpcController（客户端）：已有基础实现，需完善动画和状态同步",
+    "MapRoadNetworkMgr / Map：扩展按类型过滤的查询接口",
+    "road_traffic_miami.json（车辆路网 50K 路点）：作为行人路网派生的数据源",
+    "MapLegendControl / MapPanel（客户端小地图）：扩展大世界 NPC 图例",
+    "icon.xlsx LegendType_c 配置表：新增图例类型条目",
+    "NPC 配置表（npc.xlsx）：新增 patrolRouteIds / patrolSpeedScale 字段",
+    "scene.xlsx：补填 Miami 场景 pedWaypointFile 字段",
+    "现有 NetEntity 协议：NPC 创建/销毁/状态同步的网络通道"
+  ],
+  "notes": [
+    "[待确认] icon.xlsx LegendType_c 新增条目的 ID 值（文档示例 127，需确认不与现有条目冲突）",
+    "[待确认] NPC 配置表中 patrolRouteIds 和 patrolSpeedScale 字段的具体列名和位置（需确认 npc.xlsx 表结构）",
+    "[待确认] 行人路网派生脚本的法线偏移距离（3-5m）是否适用于所有路段，窄路可能需要特殊处理",
+    "[待确认] WalkZone 的具体划分边界（downtown/park/suburb/beach/commercial），需美术确认地图分区",
+    "[待确认] 大世界 NPC 外观池（bigworld_npc_appearance.json）现有条目是否满足需求，或需补充新外观",
+    "[待确认] 巡逻路线节点的 behaviorType 枚举值与客户端动画的映射关系（需确认 NpcPatrolNodeArriveNtf 的枚举定义）",
+    "[待确认] scene.xlsx 中 Miami 场景的 id 值（文档假设为 16，需确认）",
+    "行人路网方案 A（从车辆路网派生）仅覆盖主干道两侧人行道，公园/广场/海滩步道等区域后续由美术手工补充",
+    "巡逻路线配置走 bin/config/ 直放模式（与小镇一致），不经过打表流程",
+    "NPC 数量预算 50 个为初始值，后续根据性能测试可调整 npc_zone_quota.json"
+  ]
+}

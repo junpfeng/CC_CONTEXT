@@ -1,0 +1,39 @@
+{
+  "server_design": {
+    "note": "V2_NPC 为纯客户端表现力改动，服务端无任何变动。以下内容仅说明客户端依赖的现有服务端数据结构，供实现参考。",
+    "existing_dependencies": {
+      "npc_state_enum": {
+        "description": "客户端 FSM 依赖的已有 NpcState 枚举值（不新增）",
+        "used_values": [
+          "NpcState.Idle — 默认待机，映射 BigWorldNpcIdleState",
+          "NpcState.Move — 移动中，映射 BigWorldNpcMoveState",
+          "NpcState.Scenario — 场景点行为，映射 BigWorldNpcScenarioState（REQ-003）",
+          "NpcState.ScheduleIdle — 日程驻留，映射 BigWorldNpcScheduleIdleState（REQ-003）",
+          "NpcState.Combat — 战斗，动画组切换（REQ-007）",
+          "NpcState.Flee — 逃跑，跑动姿态叠加（REQ-007）",
+          "NpcState.Watch — 警惕观察，Watch 动画组（REQ-007）",
+          "NpcState.Investigate — 调查，Investigate 动画组（REQ-007）",
+          "NpcState.Scared — 恐惧，AdditiveBody 层叠加（REQ-007）",
+          "NpcState.Panicked — 恐慌，AdditiveBody 层叠加（REQ-007）",
+          "NpcState.Curious — 好奇，Face 层表情（REQ-007）",
+          "NpcState.Nervous — 紧张，Face 层表情（REQ-007）",
+          "NpcState.Angry — 愤怒，Face 层表情（REQ-007）",
+          "NpcState.Death — 死亡，抑制击中反应（REQ-008）"
+        ]
+      },
+      "npc_sync_data": {
+        "description": "服务端帧同步推送的 NPC 数据字段（已有，不修改）",
+        "fields": [
+          {"name": "gender", "type": "int/enum", "description": "性别，REQ-001 依赖"},
+          {"name": "npc_state", "type": "NpcState enum", "description": "当前状态，FSM 驱动依赖"},
+          {"name": "position", "type": "Vector3", "description": "位置"},
+          {"name": "heading", "type": "float", "description": "朝向（度数）"},
+          {"name": "speed", "type": "float", "description": "移动速度，速度驱动动画依赖"}
+        ]
+      }
+    },
+    "data_models": [],
+    "actors": [],
+    "error_codes": []
+  }
+}

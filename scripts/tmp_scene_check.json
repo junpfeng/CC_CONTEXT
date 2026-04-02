@@ -1,0 +1,3 @@
+{
+  "csharpCode": "using UnityEngine;\npublic class Script\n{\n    public static object Main()\n    {\n        try\n        {\n            bool inTown = FL.Gameplay.Manager.SceneManager.IsInTown;\n            var uType = FL.Gameplay.Manager.SceneManager.UniverseType;\n            return \"IsInTown=\" + inTown + \" UniverseType=\" + uType;\n        }\n        catch (System.Exception ex) { return \"Error: \" + ex.Message; }\n    }\n}"
+}

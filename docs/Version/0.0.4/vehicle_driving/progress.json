@@ -1,0 +1,28 @@
+{
+  "requirement_doc": "docs/version/0.0.4/vehicle_driving/idea.md",
+  "design_doc_dir": "docs/version/0.0.4/vehicle_driving",
+  "current_phase": "P4",
+  "started_at": "2026-03-30T00:00:00Z",
+  "updated_at": "2026-03-30T00:10:00Z",
+  "phases": {
+    "P0": {"status": "completed", "completed_at": "2026-03-30T00:01:00Z"},
+    "P1": {"status": "completed", "completed_at": "2026-03-30T00:02:00Z"},
+    "P2": {"status": "completed", "completed_at": "2026-03-30T00:08:00Z"},
+    "P3": {"status": "completed", "completed_at": "2026-03-30T00:10:00Z"},
+    "P4": {"status": "in_progress"},
+    "P5": {"status": "pending"},
+    "P6": {"status": "pending"},
+    "P7": {"status": "pending"}
+  },
+  "tasks": {
+    "TASK-001": {"wave": 0, "status": "in_progress", "decision": null, "fix_rounds": 0},
+    "TASK-002": {"wave": 1, "status": "pending", "decision": null, "fix_rounds": 0},
+    "TASK-003": {"wave": 1, "status": "pending", "decision": null, "fix_rounds": 0}
+  },
+  "waves": {},
+  "git_checkpoints": {
+    "wave-0": {"P1GoServer": "934c70cf27274833dd302c42a753bad61f2330e2", "freelifeclient": "de60c8d15b7120b069ec4cd1c3a78483d5559790"},
+    "TASK-001": {"P1GoServer": "934c70cf27274833dd302c42a753bad61f2330e2"}
+  },
+  "review_rounds": []
+}

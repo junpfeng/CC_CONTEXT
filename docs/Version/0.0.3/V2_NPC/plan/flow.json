@@ -1,0 +1,136 @@
+{
+  "flows": {
+    "main": [
+      {
+        "name": "NPC 生成 - 性别 Prefab 选择（REQ-001）",
+        "description": "服务端初始化数据含 Gender 字段，Controller 根据性别实例化不同 Prefab",
+        "steps": [
+          "步骤1: 服务端推送 NPC 初始化消息（含 npc_cfg_id、gender、position、heading）",
+          "步骤2: BigWorldNpcManager 调用 BigWorldNpcController.Init(npcData)",
+          "步骤3: Controller.Init() 读取 npcData.gender，选择 Prefab：Male→NewNpcPrefab，Female→NewNpcPrefab_Female，Unknown→NewNpcPrefab",
+          "步骤4: Instantiate 选中 Prefab，挂载 6 个 Comp",
+          "步骤5: AppearanceComp.LoadAppearanceAsync() 异步加载性别对应外观",
+          "步骤6: 加载完成，AnimationComp 播放 Idle，FsmComp 进入 IdleState"
+        ],
+        "key_files": ["BigWorldNpcController.cs", "BigWorldNpcAppearanceComp.cs"]
+      },
+      {
+        "name": "转身过渡（REQ-002）",
+        "description": "NPC 朝向差超过阈值时，客户端自主插入 TurnState 播放转身动画",
+        "steps": [
+          "步骤1: 每帧 BigWorldNpcMoveComp 更新 targetHeadingDeg（目标朝向）",
+          "步骤2: BigWorldNpcFsmComp.Update() 计算 deltaAngleDeg = Mathf.DeltaAngle(currentHeadingDeg, targetHeadingDeg) <!-- [迭代3修复] I2: 检测位置明确为 FsmComp.Update()，不在 MoveComp 回调中 -->",
+          "步骤3: Mathf.Abs(deltaAngleDeg) >= TurnThresholdDeg(30f) → 记录 _prevStateType，切入 TurnState <!-- [迭代3修复] I1: 阈值保留30f（代码现有值），不改为45f -->",
+          "步骤4: BigWorldNpcTurnState.OnEnter() 调用 AnimationComp 播放对应转身动画 Clip（左/右转基于 deltaAngleDeg 符号）",
+          "步骤5: 启动 _turnTimeoutTimer = 2f",
+          "步骤6a: 动画播放完毕（AnimancerState.IsPlaying == false）→ FsmComp 切回 _prevStateType",
+          "步骤6b: _turnTimeoutTimer <= 0 → 强制退出，切回 _prevStateType",
+          "步骤7: TurnState.OnExit() 停止转身动画层，不留残留权重"
+        ],
+        "angle_unit_rule": "所有角度变量和比较统一用度数（Deg），常量命名加 Deg 后缀（TurnThresholdDeg），符合 lesson-002",
+        "turn_during_active": "<!-- [迭代3修复] I3: TurnState 执行期间若服务端推送新目标朝向（朝向差仍 >= TurnThresholdDeg），忽略新触发，等当前 TurnState 结束后若朝向差仍大则重新触发。FsmComp.Update() 的 currentState != TurnState 判断已覆盖此逻辑，无需额外代码 -->",
+        "key_files": ["BigWorldNpcTurnState.cs", "BigWorldNpcFsmComp.cs"]
+      },
+      {
+        "name": "场景点行为 - Scenario（REQ-003）",
+        "description": "服务端推送 NpcState.Scenario 时，FSM 切入 ScenarioState 播放场景点动画",
+        "steps": [
+          "步骤1: 服务端帧同步推送 NpcState=Scenario（携带 animationKey 或从 npcData 衍生）",
+          "步骤2: BigWorldNpcFsmComp.HandleServerState(Scenario) → 切入 BigWorldNpcScenarioState",
+          "步骤3: ScenarioState.OnEnter() 读取动画 Key（<!-- [迭代3修复] C2: NpcData 无 ScenarioAnimKey 字段，采用方案A：按 npc_cfg_id 查 NpcCfg 配置表的 scenario_default_anim_key 字段；若无配置则降级Idle并打Warning -->从 NpcCfg 配置表按 npc_cfg_id 查找 scenario_default_anim_key），调用 AnimationComp.Play(key)",
+          "步骤4: 动画以 Loop 模式持续播放，等待服务端状态变更",
+          "步骤5: 服务端推送其他 NpcState → ScenarioState.OnExit() CrossFade 淡出，FsmComp 切换新状态"
+        ],
+        "key_files": ["BigWorldNpcScenarioState.cs", "BigWorldNpcFsmComp.cs", "BigWorldNpcAnimationComp.cs"]
+      },
+      {
+        "name": "日程驻留 - ScheduleIdle（REQ-003）",
+        "description": "服务端推送 NpcState.ScheduleIdle 时，FSM 切入 ScheduleIdleState",
+        "steps": [
+          "步骤1: 服务端推送 NpcState=ScheduleIdle",
+          "步骤2: FsmComp 切入 BigWorldNpcScheduleIdleState",
+          "步骤3: ScheduleIdleState.OnEnter() 播放日程等待动画（默认 Idle 组，可扩展配置）",
+          "步骤4: 等待服务端状态变更后退出"
+        ],
+        "key_files": ["BigWorldNpcScheduleIdleState.cs", "BigWorldNpcFsmComp.cs"]
+      },
+      {
+        "name": "动画层初始化（REQ-004/005）",
+        "description": "AnimationComp 初始化时扩展加载 RightArm/AdditiveBodyExtra/Face 层",
+        "steps": [
+          "步骤1: BigWorldNpcAnimationComp.OnInit() 初始化 Animancer，创建现有7层",
+          "步骤2: 扩展创建 RightArm 层（初始权重0，绑定 RightArmAvatarMask）",
+          "步骤3: 扩展创建 AdditiveBodyExtra 层（Additive混合，初始权重0）",
+          "步骤4: Face 层已存在，补充 LoadAvatarMasks() 加载 FaceAvatarMask",
+          "步骤5: 异步预加载 4 个面部 Clip（Angry/Happy/Sad/Idle）存入 _faceClips",
+          "步骤6: 加载失败时静默跳过，该层/Clip 功能禁用，不影响其他层"
+        ],
+        "key_files": ["BigWorldNpcAnimationComp.cs"]
+      },
+      {
+        "name": "面部情绪动画（REQ-005）",
+        "description": "EmotionComp 情绪变化时通知 AnimationComp 在 Face 层播放对应 Clip",
+        "steps": [
+          "步骤1: 服务端推送情绪数据，EmotionComp 更新内部情绪状态",
+          "步骤2: EmotionComp 调用 AnimationComp.PlayFaceAnim(emotionType)",
+          "步骤3: AnimationComp 查 _faceClips[emotionType] → 不存在时跳过",
+          "步骤4: 存在时 Face 层 CrossFade(clip, 0.2f) 切换面部动画",
+          "步骤5: 情绪恢复（Neutral/None）时切回 FaceIdle Clip"
+        ],
+        "key_files": ["BigWorldNpcEmotionComp.cs", "BigWorldNpcAnimationComp.cs"]
+      },
+      {
+        "name": "击中反应（REQ-008）",
+        "description": "收到击中事件时 UpperBody 层短暂播放击中动画约 1s",
+        "steps": [
+          "步骤1: 伤害系统事件 → BigWorldNpcAnimationComp.OnHit(HitData)",
+          "步骤2: 检查 _isDead（死亡状态跳过）；检查 _isInHitReaction（正在击中中跳过或重置）",
+          "步骤3: _isInHitReaction = true，UpperBody 层 CrossFade(hitReactionClip, 0.1f)",
+          "步骤4: 启动 _hitReactionTimer = 1f",
+          "步骤5: Update() 中 _hitReactionTimer 倒计时归零 → _isInHitReaction = false，UpperBody 层恢复"
+        ],
+        "key_files": ["BigWorldNpcAnimationComp.cs"]
+      },
+      {
+        "name": "战斗/警惕状态动画（REQ-007）",
+        "description": "通过 serverStateMap 入口在现有 Idle/MoveState 内切换动画组或叠加层（不新建独立状态类）",
+        "steps": [
+          "步骤1: 服务端推送 NpcState=Combat/Fled/Scared/Panicked 等",
+          "步骤2: FsmComp.HandleServerState() 根据状态切换到 Idle 或 MoveState（保持运动逻辑不变）",
+          "步骤3: 同时调用 AnimationComp.SetAnimationGroup(state) 切换动画组（如 CombatWpn）",
+          "步骤4: 若有叠加需求（Scared/Panicked），调用 AnimationComp.SetAdditiveBodyOverlay(state)",
+          "步骤5: 状态退出时 AnimationComp 淡出叠加层，权重归零"
+        ],
+        "design_decision": "[自主决策] 不新建 CombatState/ScaredState 独立类（YAGNI）。通过 AnimationComp 的动画组切换实现视觉区分，逻辑集中在 HandleServerState 分支。",
+        "key_files": ["BigWorldNpcFsmComp.cs", "BigWorldNpcAnimationComp.cs"]
+      }
+    ],
+    "exception": [
+      {
+        "name": "YooAsset 加载超时/失败",
+        "trigger": "AvatarMask / FaceClip / Timeline / Prefab 加载超时或资源不在打包分组中",
+        "handling": "catch 异常，MLog.Warning?.Log(\"资源加载失败: \" + assetKey)，该功能静默降级（跳过该层或使用默认 Clip），不抛异常向上传播"
+      },
+      {
+        "name": "TurnState 超时",
+        "trigger": "_turnTimeoutTimer <= 0（2s 内转身动画未完成）",
+        "handling": "强制调用 FsmComp 切回 _prevStateType，MLog.Warning?.Log(\"TurnState timeout, force exit\")"
+      },
+      {
+        "name": "Gender 字段缺失或未知",
+        "trigger": "npcData.gender 为 Unknown/0 或字段未填充",
+        "handling": "回退 NewNpcPrefab（男性），不打日志（正常情况）"
+      },
+      {
+        "name": "ScenarioState 动画 Key 未配置",
+        "trigger": "服务端 NpcState.Scenario 携带的 animKey 在当前动画组中不存在",
+        "handling": "AnimationComp 回退播放 Idle 动画，MLog.Warning?.Log(\"Scenario anim key not found: \" + key)"
+      },
+      {
+        "name": "击中时已在死亡状态",
+        "trigger": "_isDead == true 时收到 OnHit",
+        "handling": "直接 return，不触发击中动画"
+      }
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+═══ vehicle_driving dev-workflow ═══
+Phase: P7 COMPLETED
+Tasks: 3/3 Keep (0 Discard)
+Compile: PASS (Go + Unity)
+Runtime: BLOCKED (TrafficManager not initialized)
+Review: 2 fixes applied (rb null + owner update)

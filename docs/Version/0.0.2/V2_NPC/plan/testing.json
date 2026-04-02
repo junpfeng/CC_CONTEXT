@@ -1,0 +1,309 @@
+{
+  "testing": {
+    "overview": "测试分为编译验证、服务端功能验证、客户端表现验证三个层次。编译验证在每次代码修改后立即执行，功能验证通过 GM 命令和日志检查，表现验证通过 Unity MCP 截图确认。",
+
+    "compilation": {
+      "description": "每次代码修改后必须双端编译验证（lesson-001）",
+      "server": {
+        "command": "cd P1GoServer && make build",
+        "frequency": "每次修改 .go 文件后",
+        "common_issues": [
+          "循环 import（System 层不能 import npc_mgr → 用 interface 解耦）",
+          "未使用的 import（go build 严格检查）",
+          "interface 方法签名不匹配（Map 新增方法后 RoadNetQuerier 需同步更新）"
+        ]
+      },
+      "client": {
+        "command": "Unity MCP console-get-logs 检查编译错误",
+        "frequency": "每次修改 .cs 文件后",
+        "common_issues": [
+          "CS0104 Vector3 歧义（using FL.NetModule 时需加 alias）",
+          "缺少 using UnityEngine（新建 .cs 文件）",
+          "async 方法缺少 CancellationToken"
+        ]
+      }
+    },
+
+    "server_tests": [
+      {
+        "id": "ST-001",
+        "category": "初始化",
+        "title": "行人路网加载验证",
+        "priority": "P0",
+        "steps": [
+          "启动服务器（大世界场景）",
+          "检查日志：MapRoadNetworkMgr 加载 miami_ped_road.json 成功",
+          "检查日志：roadsByType[footwalk] 索引包含 >0 个子路网",
+          "检查日志：BigWorldNpcSpawner.disabled == false"
+        ],
+        "expected": "路网加载成功，Spawner 就绪",
+        "gm_command": "/ke* gm bw_npc info（查看 Spawner 状态）"
+      },
+      {
+        "id": "ST-002",
+        "category": "初始化",
+        "title": "巡逻路线加载验证",
+        "priority": "P0",
+        "steps": [
+          "启动服务器",
+          "检查日志：PatrolRouteManager 加载 bigworld/ 路线成功",
+          "确认路线数量 15-25 条",
+          "确认各路线 walkZone 字段非空"
+        ],
+        "expected": "巡逻路线全部加载成功",
+        "gm_command": "/ke* gm bw_npc info"
+      },
+      {
+        "id": "ST-003",
+        "category": "生成",
+        "title": "NPC 生成位置验证",
+        "priority": "P0",
+        "steps": [
+          "玩家进入大世界",
+          "等待 NPC 自动生成",
+          "/ke* gm bw_npc info 查看 NPC 数量和位置",
+          "确认 NPC 位置在 footwalk 路网路点附近（非机动车道）"
+        ],
+        "expected": "所有 NPC 生成在人行道上",
+        "validation": "NPC 坐标与最近 footwalk 路点距离 < 5m"
+      },
+      {
+        "id": "ST-004",
+        "category": "生成",
+        "title": "分帧生成验证",
+        "priority": "P0",
+        "steps": [
+          "玩家进入大世界（首次，NPC 数=0）",
+          "观察日志：每帧生成数 <= SpawnBatchSize",
+          "确认无帧率突刺"
+        ],
+        "expected": "NPC 分批生成，不卡顿"
+      },
+      {
+        "id": "ST-005",
+        "category": "配额",
+        "title": "WalkZone 配额验证",
+        "priority": "P0",
+        "steps": [
+          "玩家在大世界移动经过多个 WalkZone",
+          "/ke* gm bw_npc info 查看各 zone NPC 分布",
+          "确认 downtown 区 NPC 密度 > suburb 区（densityWeight 生效）",
+          "确认各 zone NPC 数 <= maxNpc"
+        ],
+        "expected": "配额按权重分配，硬上限生效"
+      },
+      {
+        "id": "ST-006",
+        "category": "移动",
+        "title": "NPC 沿路网移动验证",
+        "priority": "P0",
+        "steps": [
+          "观察 NPC 移动路径",
+          "确认 NPC 沿人行道移动，不走到马路中间",
+          "确认 NPC 到达巡逻节点后（有 duration）停下",
+          "确认停留结束后继续前进"
+        ],
+        "expected": "NPC 沿 footwalk 路网自然移动"
+      },
+      {
+        "id": "ST-007",
+        "category": "回收",
+        "title": "AOI 回收验证",
+        "priority": "P0",
+        "steps": [
+          "玩家远离 NPC 群（> DespawnRadius=200m）",
+          "等待 DespawnDelay（30s）",
+          "/ke* gm bw_npc info 确认 NPC 数量减少",
+          "确认日志：PatrolRoute.ReleaseNpc 被调用"
+        ],
+        "expected": "NPC 延迟回收，巡逻路线释放"
+      },
+      {
+        "id": "ST-008",
+        "category": "GM",
+        "title": "GM 手动生成验证",
+        "priority": "P0",
+        "steps": [
+          "/ke* gm bw_npc spawn 1（有效 cfgId）",
+          "确认 NPC 在玩家附近生成",
+          "/ke* gm bw_npc spawn 99999（无效 cfgId）",
+          "确认返回错误提示，不崩溃"
+        ],
+        "expected": "有效 cfgId 成功生成，无效 cfgId 优雅报错"
+      },
+      {
+        "id": "ST-009",
+        "category": "隔离",
+        "title": "场景隔离验证",
+        "priority": "P0",
+        "steps": [
+          "登录小镇场景",
+          "确认小镇 NPC 正常（日程/巡逻/交互）",
+          "切换到大世界场景",
+          "确认大世界 NPC 使用独立配置（bigworld_ 前缀）",
+          "确认 Pipeline 4 维度独立运行"
+        ],
+        "expected": "两套 NPC 系统完全隔离，互不影响"
+      },
+      {
+        "id": "ST-010",
+        "category": "性能",
+        "title": "50 NPC 并行寻路性能",
+        "priority": "P0",
+        "steps": [
+          "生成 50 个 NPC",
+          "观察服务器帧耗时",
+          "确认路网查询总耗时 < 1ms/frame"
+        ],
+        "expected": "50 NPC 寻路不影响帧率"
+      },
+      {
+        "_comment_n2": "<!-- [迭代17修复] N2: 补充 AOI 完整生命周期端到端集成测试，覆盖 despawn+respawn 循环和路线释放 -->",
+        "id": "ST-011",
+        "category": "集成",
+        "title": "AOI 完整生命周期端到端回归",
+        "priority": "P1",
+        "steps": [
+          "玩家在大世界从无 NPC 区域走入 WalkZone（SpawnRadius=100m）",
+          "/ke* gm bw_npc info 确认 NPC 已生成，路线已分配",
+          "确认 NpcV2Info + MonsterTransformUpdate 消息推送正常（服务端日志）",
+          "玩家离开 WalkZone（> DespawnRadius=200m），等待 DespawnDelay 30s",
+          "/ke* gm bw_npc info 确认 NPC 数量回零，PatrolRoute.ReleaseNpc 日志出现",
+          "新玩家（或原玩家）重新进入同一 WalkZone",
+          "确认 NPC 重新生成，路线重新分配（路线未被永久占用）",
+          "确认第二轮 NPC 生命周期与第一轮行为一致，无路线泄漏"
+        ],
+        "expected": "完整 despawn+respawn 循环正常，路线释放后可复用，无状态残留",
+        "gm_command": "/ke* gm bw_npc info（各阶段查看状态）",
+        "regression_focus": "C1 修复验证：路线满员期间无 CPU 螺旋（帧耗时监控），retryCount 正常累积后 AssignFailed 生效，respawn 后 AssignFailed 自动重置"
+      }
+    ],
+
+    "client_tests": [
+      {
+        "id": "CT-001",
+        "category": "动画",
+        "title": "Idle/Walk/Run 动画切换",
+        "priority": "P0",
+        "steps": [
+          "Unity Play 模式进入大世界",
+          "观察 NPC 动画：静止时 Idle，移动时 Walk/Run",
+          "screenshot-game-view 截图确认",
+          "确认动画过渡平滑，无跳帧"
+        ],
+        "expected": "动画正确切换，过渡自然",
+        "mcp_verify": true
+      },
+      {
+        "id": "CT-002",
+        "category": "移动",
+        "title": "位置插值平滑性",
+        "priority": "P0",
+        "steps": [
+          "近距离观察 NPC 移动",
+          "确认无瞬移/闪烁/卡顿",
+          "确认朝向跟随移动方向自然旋转",
+          "screenshot-game-view 多帧对比"
+        ],
+        "expected": "移动平滑，朝向自然",
+        "mcp_verify": true
+      },
+      {
+        "id": "CT-003",
+        "category": "生命周期",
+        "title": "NPC 创建和回收",
+        "priority": "P0",
+        "steps": [
+          "观察 NPC 从无到出现的过程（外观加载）",
+          "远离后观察 NPC 消失",
+          "检查 console-get-logs 无报错",
+          "确认对象池正常回收（无泄漏）"
+        ],
+        "expected": "创建/回收流程正常，无内存泄漏",
+        "mcp_verify": true
+      },
+      {
+        "id": "CT-004",
+        "category": "UI",
+        "title": "小地图 NPC 图例",
+        "priority": "P1",
+        "steps": [
+          "大世界场景中找到小地图 NPC 图例按钮",
+          "点击 Toggle 开启 → 确认 NPC 位置标记出现",
+          "点击 Toggle 关闭 → 确认标记消失",
+          "切换到小镇场景 → 确认按钮不显示"
+        ],
+        "expected": "图例 Toggle 功能正常，场景过滤生效",
+        "mcp_verify": true
+      },
+      {
+        "id": "CT-005",
+        "category": "编译",
+        "title": "Unity 编译无错误",
+        "priority": "P0",
+        "steps": [
+          "Unity Editor 打开项目",
+          "console-get-logs 检查编译错误",
+          "确认无 CS 错误（CS0104/CS0246 等）"
+        ],
+        "expected": "编译通过，无错误",
+        "mcp_verify": true
+      }
+    ],
+
+    "script_validation": [
+      {
+        "_comment_i5": "<!-- [迭代3修复] I5: 巡逻路线容量验证 -->",
+        "id": "SV-001",
+        "title": "巡逻路线容量 >= 1.5x 总预算",
+        "command": "generate_patrol_routes.py 输出日志中 sum(desiredNpcCount) >= 75（totalNpcBudget=50 × 1.5）",
+        "expected": "路线容量充足，无路线满员但配额未用满的情况"
+      },
+      {
+        "_comment_c2": "<!-- [迭代3修复] C2: 路网连通性验证 -->",
+        "id": "SV-002",
+        "title": "行人路网连通性",
+        "command": "generate_ped_road.py 输出连通性报告：连通分量数=1，孤立点数=0",
+        "expected": "所有 footwalk 路点全连通，A* 可达"
+      },
+      {
+        "_comment_i1_fix": "<!-- [迭代7修复] I1: 验证 Y 坐标修正结果，防止 Unity 未启动时静默产出错误路点 -->",
+        "id": "SV-003",
+        "title": "行人路网 Y 坐标合理性验证",
+        "prerequisites": "Unity Editor 必须运行且 MCP 可用（port 8080）",
+        "command": "检查 miami_ped_road.json：所有路点 Y 坐标在合理的地形高度范围内（-10 < Y < 100）。若 generate_ped_road.py 输出 WARNING 'Y correction failed'，则路点 Y 值无效，需重新运行脚本",
+        "expected": "无 Y 坐标异常路点（漂浮或嵌地），无 'Y correction failed' WARNING"
+      },
+      {
+        "_comment_i3": "<!-- [迭代17修复] I3: 验证 NavMesh 有效性校验结果，确保横向偏移不产生建筑内/悬空路点 -->",
+        "id": "SV-004",
+        "title": "行人路网路点有效性验证（NavMesh 采样）",
+        "prerequisites": "Unity Editor 必须运行且 MCP 可用（port 8080），A* Pathfinding Project 图已加载",
+        "command": "generate_ped_road.py 输出日志中检查：'[NavMesh校验] 过滤比例 < 30%'；若过滤比例 >= 30% 说明偏移参数（法线方向或偏移距离）有误，需人工介入调整",
+        "expected": "过滤比例 < 30%（即有效路点 > 70%），无 WARNING 提示",
+        "failure_action": "若过滤比例过高，检查：① 偏移方向是否与建筑物紧邻（缩小偏移距离到 2m 重试）；② A* 图是否完整覆盖人行道区域（需美术确认 NavMesh 范围）"
+      }
+    ],
+
+    "regression_checks": [
+      "小镇 NPC 系统不受影响（TownNpcController 功能正常）",
+      "樱花场景 NPC 不受影响",
+      "大世界交通车辆系统不受影响（车辆路网查询接口向后兼容）",
+      "Map.FindNearestPointID / FindPath 原有行为不变",
+      "现有 Pipeline 注册（小镇/樱花）不被 BigWorld 注册覆盖"
+    ],
+
+    "automated_validation": {
+      "description": "编码完成后自动执行的验证步骤",
+      "steps": [
+        "1. make build（服务端编译）",
+        "2. console-get-logs（客户端编译错误检查）",
+        "3. grep MLog.*$\" 检查 C# 日志插值（lesson-003）",
+        "4. grep 新增 .cs 文件确认 using UnityEngine 存在",
+        "5. grep async UniTaskVoid 确认带 CancellationToken",
+        "6. 启动服务器 → /ke* gm bw_npc info 确认初始化正常",
+        "7. Unity Play → screenshot-game-view 确认 NPC 可见"
+      ]
+    }
+  }
+}

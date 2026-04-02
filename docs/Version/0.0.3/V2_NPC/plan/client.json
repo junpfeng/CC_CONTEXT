@@ -1,0 +1,187 @@
+{
+  "client_design": {
+    "managers": [],
+    "ui_panels": [],
+    "state_management": "所有状态均为运行时内存状态，无本地持久化。面部Clip、Timeline通过_faceClips/_replaceTimelines Dictionary缓存，Controller生命周期内有效，OnClear时随Controller销毁（对象池场景在ResetForPool中清理引用但不重新加载）。",
+    "error_handling": "资源加载失败静默降级；TurnState 2s超时强制退出；Gender缺失回退男性Prefab；动画Key不存在回退Idle并打Warning日志。",
+
+    "components_modified": [
+      {
+        "name": "BigWorldNpcController",
+        "file": "BigWorldNpcController.cs",
+        "req": "REQ-001",
+        "changes": [
+          "新增 [SerializeField] NewNpcPrefab_Female 引用（或通过 AssetKey 动态加载）",
+          "Init() 中添加 SelectPrefabByGender(gender) 私有方法：Male→NewNpcPrefab，Female→NewNpcPrefab_Female，Unknown→NewNpcPrefab",
+          "Instantiate 调用改为使用 SelectPrefabByGender 返回值"
+        ],
+        "notes": "[自主决策] Prefab 引用方式：若现有 NewNpcPrefab 是通过 Inspector 直接引用，则新增 NewNpcPrefab_Female 同样方式引用。若通过 AssetKey 字符串加载，则添加 _femalePrefabKey 常量。实现时先阅读 Controller 现有 Prefab 引用方式再确定。"
+      },
+      {
+        "name": "BigWorldNpcFsmComp",
+        "file": "BigWorldNpcFsmComp.cs",
+        "req": "REQ-002/003/007",
+        "changes": [
+          "REQ-002: CreateFsm() 中确认 BigWorldNpcTurnState 已注册；补全 TurnState 触发逻辑（Update中检测朝向差）",
+          "REQ-003: serverStateMap 中添加 NpcState.Scenario → BigWorldNpcScenarioState 映射",
+          "REQ-003: serverStateMap 中添加 NpcState.ScheduleIdle → BigWorldNpcScheduleIdleState 映射",
+          "REQ-007: HandleServerState() 中对 Combat/Flee/Watch/Investigate/Scared/Panicked/Curious/Nervous/Angry 调用 AnimationComp.SetAnimationGroup() 或 SetAdditiveBodyOverlay()",
+          "REQ-007: 状态退出时调用 AnimationComp.ClearAnimationGroupOverride() 和 ClearAdditiveBodyOverlay()"
+        ],
+        "turn_state_logic": {
+          "threshold_constant": "<!-- [迭代3修复] I1: 代码已有 TurnThresholdDeg=30f，明确保留30f（更自然的过渡，不改现有行为）；plan 原定45f作废 --> private const float TurnThresholdDeg = 30f;",
+          "detection": "<!-- [迭代3修复] I2: 明确检测位置为 FsmComp.Update()（适用于静止NPC改变朝向），删除 MoveComp 回调方案 --> 每帧在 BigWorldNpcFsmComp.Update() 中：float deltaAngleDeg = Mathf.DeltaAngle(currentHeadingDeg, targetHeadingDeg); if (Mathf.Abs(deltaAngleDeg) >= TurnThresholdDeg && currentState != TurnState) EnterTurnState();",
+          "new_heading_during_turn": "<!-- [迭代3修复] I3: TurnState 执行期间忽略新的朝向差触发（简单方案）。TurnState 结束后若朝向差仍 >= TurnThresholdDeg 则再次触发 TurnState。条件：currentState != TurnState 已覆盖此逻辑 -->",
+          "prev_state_save": "private Type _prevStateType; 进入TurnState前保存当前状态类型",
+          "angle_unit": "全程度数，符合 lesson-002"
+        }
+      },
+      {
+        "name": "BigWorldNpcAnimationComp",
+        "file": "BigWorldNpcAnimationComp.cs",
+        "req": "REQ-004/005/006/008",
+        "changes_req004": [
+          "<!-- [迭代3修复] C1: 枚举中 RightArm=1、AdditiveBodyExtra=5 已存在，不需要'新增层'，只需确认 BigWorldNpcAnimationComp.OnInit() 或 CreateLayers() 是否已对这两个索引调用初始化代码，若未初始化则补齐 -->",
+          "读取 BigWorldNpcAnimationComp.cs 的 OnInit()/CreateLayers()，确认 AnimancerLayers.RightArm(index=1) 是否已初始化；若未初始化则补：animancer.Layers[AnimancerLayers.RightArm].SetMask(rightArmMask); Weight=0",
+          "确认 AnimancerLayers.AdditiveBodyExtra(index=5) 是否已初始化；若未初始化则补：animancer.Layers[AnimancerLayers.AdditiveBodyExtra].IsAdditive=true; Weight=0",
+          "LoadAvatarMasks() 扩展：异步加载 RightArmAvatarMask，存入 _rightArmMask",
+          "加载失败时日志：MLog.Warning?.Log(\"RightArmAvatarMask load failed: \" + assetKey)，层降级无Mask运行"
+        ],
+        "changes_req005": [
+          "LoadAvatarMasks() 中添加异步加载 FaceAvatarMask",
+          "新增 Dictionary<EmotionType, AnimationClip> _faceClips （<!-- [迭代3修复] I5: 统一用 EmotionType 作为Key，与EmotionComp情绪类型保持一致，内部映射到Clip -->）",
+          "OnInit() 后异步预加载4个面部Clip：Angry/Happy/Sad/Idle 存入 _faceClips[EmotionType.xxx]",
+          "<!-- [迭代3修复] I4: 预加载完成前若EmotionComp已触发情绪，面部动画将被静默丢弃。在EmotionComp中缓存最后一次情绪请求 --> 在 BigWorldNpcEmotionComp 中新增字段 EmotionType _pendingEmotion = EmotionType.None；预加载完成回调（AnimationComp侧）中若 _pendingEmotion != None 则补调 PlayFaceAnim(_pendingEmotion)；EmotionComp在调用PlayFaceAnim时若_faceClips为空则先缓存到_pendingEmotion",
+          "<!-- [迭代3修复] I5: 明确接口签名 --> 新增接口：public void PlayFaceAnim(EmotionType emotionType) — 内部将 EmotionType 映射到对应Clip Key，查 _faceClips，CrossFade(clip, 0.2f) 在 Face 层",
+          "Face 层初始 Weight=1（始终激活）"
+        ],
+        "changes_req006": [
+          "新增字段：private Dictionary<ConfigEnum.TransitionKey, TimelineAsset> _replaceTimelines",
+          "ChangeAnimationsByGroup() 中同步加载该动画组的 Timeline 替换表",
+          "新增接口：public void PlayTimeline(ConfigEnum.TransitionKey key) — 查 _replaceTimelines，存在则触发PlayableDirector，不存在则降级 Play(key)",
+          "新增接口：public void StopTimeline() — 停止PlayableDirector，恢复Animancer控制"
+        ],
+        "changes_req008": [
+          "新增字段：private bool _isInHitReaction; private float _hitReactionTimer; private bool _isDead",
+          "新增接口：public void OnHit(HitData hitData) — 检查_isDead，设 _isInHitReaction=true，UpperBody层播放击中Clip，_hitReactionTimer=1f",
+          "Update() 中：if (_isInHitReaction) { _hitReactionTimer -= Time.deltaTime; if(_hitReactionTimer<=0) { _isInHitReaction=false; RestoreUpperBodyAnim(); } }",
+          "<!-- [迭代3修复] I6: 明确 RestoreUpperBodyAnim() 行为 --> RestoreUpperBodyAnim()：采用方案A，直接将 UpperBody 层 Weight 淡出到 0（与 TownNpcAnimationComp 一致），不缓存击中前状态。代码：animancer.Layers[AnimancerLayers.UpperBody].StartFade(0, 0.2f)",
+          "NpcState=Death时设 _isDead=true",
+          "<!-- [迭代3修复] C3: 新增字段必须在 ResetForPool 中重置，防止对象池复用时状态残留 --> 在 BigWorldNpcAnimationComp.ResetForPool() 中补充：_isDead = false; _isInHitReaction = false; _hitReactionTimer = 0f; （_faceClips 和 _replaceTimelines 保留——资源缓存不重复加载）",
+          "<!-- [迭代3修复] C3: 同步确认 BigWorldNpcFsmComp.ResetForPool() 中清除 _prevStateType = null，防止 TurnState 复用时返回到上一个 Controller 实例的旧状态 -->"
+        ],
+        "new_public_interfaces": [
+          "void PlayFaceAnim(EmotionType emotionType) <!-- [迭代3修复] I5: 统一为 EmotionType，删除原 feature.json 中 ConfigEnum.TransitionKey 方案 -->",
+          "void PlayTimeline(ConfigEnum.TransitionKey key)",
+          "void StopTimeline()",
+          "void OnHit(HitData hitData)",
+          "void SetAnimationGroup(NpcState state) — REQ-007战斗状态动画组切换",
+          "void SetAdditiveBodyOverlay(NpcState state) — REQ-007叠加层控制",
+          "void ClearAdditiveBodyOverlay()"
+        ]
+      },
+      {
+        "name": "BigWorldNpcEmotionComp",
+        "file": "BigWorldNpcEmotionComp.cs",
+        "req": "REQ-005",
+        "changes": [
+          "在情绪状态变化处理中（EmotionState更新后）调用 _animationComp.PlayFaceAnim(newEmotion)",
+          "_animationComp 引用在 OnInit() 中通过 _controller.GetComp<BigWorldNpcAnimationComp>() 获取"
+        ]
+      }
+    ],
+
+    "states_modified": [
+      {
+        "name": "BigWorldNpcTurnState",
+        "file": "BigWorldNpcTurnState.cs",
+        "req": "REQ-002",
+        "action": "modify",
+        "changes": [
+          "确认 TurnThresholdDeg = 30f 常量（度数，Deg后缀）<!-- [迭代3修复] I1: 代码已有30f，保留，不改为45f -->",
+          "OnEnter(): 读取转向方向（deltaAngleDeg > 0 右转 / < 0 左转），选择对应转身Clip，AnimationComp.Play(clip)，_turnTimeoutTimer = 2f",
+          "Update(): _turnTimeoutTimer 倒计时，≤0 时调用 _fsmComp.ExitTurnState()（切回_prevStateType）",
+          "检查动画是否结束：AnimancerState.IsPlaying == false → 切回前序状态",
+          "OnExit(): 停止转身动画层，Weight淡出到0"
+        ]
+      }
+    ],
+
+    "states_created": [
+      {
+        "name": "BigWorldNpcScenarioState",
+        "file": "BigWorldNpcScenarioState.cs",
+        "req": "REQ-003",
+        "action": "create",
+        "template": "参考 TownNpcScenarioState（或 TownNpcIdleState 结构），但只保留场景点动画逻辑，不引入日程驱动依赖",
+        "interface_pattern": "class BigWorldNpcScenarioState : BigWorldNpcBaseState（继承现有基类）",
+        "anim_key_source": "<!-- [迭代3修复] C2: NpcData 中无 ScenarioAnimKey/ScenarioConfig 字段（已确认），采用方案A：按 npc_cfg_id 查配置表获取默认场景动画Key --> 从 NpcCfg 配置表（按 _controller.NpcData.BaseInfo.NpcCfgId 查找）读取 scenario_default_anim_key。若配置表无此字段或值为空，则降级播放 Idle 并打 Warning 日志。实现时先读 NpcCfg 配置类确认字段名。",
+        "implementation": [
+          "OnEnter(): var cfgId = _controller.NpcData?.BaseInfo?.NpcCfgId; var cfg = NpcCfgMgr.Get(cfgId); var key = cfg?.ScenarioDefaultAnimKey; 若 key 为空则 MLog.Warning?.Log(\"ScenarioState: no anim key for npc_cfg_id=\" + cfgId) 并回退 Idle；否则 _animComp.Play(key)",
+          "OnUpdate(): 无需更新逻辑，动画自循环",
+          "OnExit(): _animComp.CrossFadeTo(IdleClip, 0.3f) 淡出场景动画",
+          "<!-- [迭代3修复] C2: 实现时若发现 NpcCfg 无 scenario_default_anim_key 字段，优先选择方案B：使用 ServerAnimStateData 中的已有字段（如 ExtraInfo/ExtState）携带Key，并在此注释中记录偏离 -->"
+        ]
+      },
+      {
+        "name": "BigWorldNpcScheduleIdleState",
+        "file": "BigWorldNpcScheduleIdleState.cs",
+        "req": "REQ-003",
+        "action": "create",
+        "implementation": [
+          "OnEnter(): _animComp.Play(ScheduleIdleKey)；Key不存在回退Idle",
+          "OnUpdate(): 无需更新",
+          "OnExit(): _animComp.CrossFadeTo(IdleClip, 0.3f)"
+        ]
+      }
+    ],
+
+    "animancer_layers_after": {
+      "description": "<!-- [迭代3修复] C1: 原表索引与 AnimancerLayers 枚举完全不符，按实际枚举定义（HoldItemData.cs）重写 --> BigWorldNpcAnimationComp 的完整动画层列表，层编号与 AnimancerLayers 枚举严格对应",
+      "enum_source": "Assets/Scripts/Tools/MEditor/MEditorCore/Runtime/Character/HoldItemData.cs",
+      "layers": [
+        {"enum": "AnimancerLayers.Base",              "index": 0, "name": "Base",              "blend_mode": "Override", "initial_weight": 1, "note": "速度驱动Walk/Run混合"},
+        {"enum": "AnimancerLayers.RightArm",          "index": 1, "name": "RightArm",          "blend_mode": "Override", "initial_weight": 0, "note": "右手持物（REQ-004，枚举已存在，补充SetMask即可）"},
+        {"enum": "AnimancerLayers.UpperBody",         "index": 2, "name": "UpperBody",         "blend_mode": "Override", "initial_weight": 0, "note": "上半身动作叠加/击中反应"},
+        {"enum": "AnimancerLayers.Arms",              "index": 3, "name": "Arms",              "blend_mode": "Override", "initial_weight": 0, "note": "手臂层"},
+        {"enum": "AnimancerLayers.AdditiveBodyDefault","index": 4, "name": "AdditiveBodyDefault","blend_mode": "Additive", "initial_weight": 0, "note": "全身叠加（恐惧/恐慌）"},
+        {"enum": "AnimancerLayers.AdditiveBodyExtra", "index": 5, "name": "AdditiveBodyExtra", "blend_mode": "Additive", "initial_weight": 0, "note": "额外全身叠加（REQ-004，枚举已存在，补充IsAdditive=true即可）"},
+        {"enum": "AnimancerLayers.AdditiveUpperBody", "index": 6, "name": "AdditiveUpperBody", "blend_mode": "Additive", "initial_weight": 0, "note": "上半身叠加"},
+        {"enum": "AnimancerLayers.AdditiveArms",      "index": 7, "name": "AdditiveArms",      "blend_mode": "Additive", "initial_weight": 0, "note": "手臂叠加"},
+        {"enum": "AnimancerLayers.Face",              "index": 8, "name": "Face",              "blend_mode": "Override", "initial_weight": 1, "note": "面部表情（REQ-005，枚举已存在）"}
+      ],
+      "implementation_note": "<!-- [迭代3修复] C1: REQ-004 不是'新增两层'，而是确认 AnimationComp 已初始化哪些层，对 RightArm(1) 补 SetMask(rightArmMask)，对 AdditiveBodyExtra(5) 补 IsAdditive=true；枚举值已存在，勿重新创建层 -->"
+    },
+
+    "implementation_order": {
+      "description": "建议按优先级分批实现，P0先行验证后再进行P1/P2",
+      "p0_tasks": [
+        "task-01: REQ-001 性别Prefab选择（Controller修改，影响最小，先行验证）",
+        "task-02: REQ-002 TurnState完善（FsmComp + TurnState.cs，核心FSM改动）",
+        "task-03: REQ-003 ScenarioState + ScheduleIdleState（新建两个状态类 + FsmComp映射）"
+      ],
+      "p1_tasks": [
+        "task-04: REQ-004 RightArm + AdditiveBodyExtra层（AnimationComp扩展）",
+        "task-05: REQ-005 Face层 + 面部动画（AnimationComp + EmotionComp联动）",
+        "task-06: REQ-006 Timeline支持（AnimationComp Timeline字典）"
+      ],
+      "p2_tasks": [
+        "task-07: REQ-007 战斗/警惕状态动画（FsmComp + AnimationComp协作）",
+        "task-08: REQ-008 击中反应动画（AnimationComp OnHit逻辑）"
+      ]
+    },
+
+    "coding_checklist": {
+      "description": "每个 task 编码完成后必须逐项自查（lesson-005）",
+      "items": [
+        "grep MLog.*$\\\" 检查日志插值（lesson-003，禁止$\"\"，用+拼接）",
+        "检查 async 方法是否带 CancellationToken（feedback_unitask_cancellation）",
+        "检查 using 是否需要 Vector3/Vector2 alias（feedback_netmodule_using_alias）",
+        "角度变量命名含单位后缀（Deg/Rad），比较前单位统一（lesson-002）",
+        "FSM OnExit 必须 Stop 所有使用过的动画层（feedback_animation_layer_cleanup）",
+        "新 Comp 在 Controller.OnInit 中已注册（feedback_client_comp_registration，本次仅修改现有Comp）",
+        "Animancer 播放 clip 前检查 isLooping（feedback_anim_clip_loop_check）"
+      ]
+    }
+  }
+}

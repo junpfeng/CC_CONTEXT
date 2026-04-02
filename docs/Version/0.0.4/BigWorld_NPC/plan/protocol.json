@@ -1,0 +1,154 @@
+{
+  "protocols": [
+    {
+      "name": "NpcSyncState（复用，新字段激活）",
+      "type": "ntf",
+      "description": "大世界NPC复用小镇V2的NpcSyncState帧同步消息。P0阶段激活emotion_state/react_type/flee_attr_flags字段供大世界NPC写入，无需新增协议消息。",
+      "field_relationships": {
+        "note": "[迭代3修复 I1] npc_state与emotion_state语义绑定规则",
+        "rule": "npc_state=Flee(2) 时必然 emotion_state=Scared(1)，两者在同一帧SetSync()中同步写入，禁止出现npc_state=Flee但emotion_state=0的中间状态。BigWorldNpcEmotionSystem在FleePlan激活时需同时写入两个字段后再调用SetSync()。",
+        "mapping": {
+          "npc_state=Flee(2)": "emotion_state必须=Scared(1)",
+          "npc_state=Nervous(3)": "emotion_state必须=Nervous(2)",
+          "npc_state=Curious(4)": "emotion_state必须=Curious(3)",
+          "npc_state=Angry(5)": "emotion_state必须=Angry(4)",
+          "emotion_state=None(0)": "npc_state回到Idle/Move，FleePlan退出时同帧同步"
+        }
+      },
+      "fields": [
+        {
+          "name": "entity_id",
+          "type": "uint64",
+          "description": "NPC实体ID"
+        },
+        {
+          "name": "npc_cfg_id",
+          "type": "uint32",
+          "description": "NPC配置ID，客户端通过cfg_id查表确定npc_sub_type（行人/商贩/警察/动物），不新增协议字段"
+        },
+        {
+          "name": "npc_state",
+          "type": "int32",
+          "description": "NPC行为状态枚举，客户端FSM切换依据，详见npc_state_enum"
+        },
+        {
+          "name": "position",
+          "type": "Vec3",
+          "description": "NPC世界坐标"
+        },
+        {
+          "name": "heading",
+          "type": "float",
+          "description": "朝向，单位：度数"
+        },
+        {
+          "name": "move_speed",
+          "type": "float",
+          "description": "当前移动速度（m/s）"
+        },
+        {
+          "name": "emotion_state",
+          "type": "int32",
+          "description": "情绪状态枚举：None=0, Scared=1, Nervous=2, Curious=3, Angry=4。P0阶段大世界NPC开始写入此字段。"
+        },
+        {
+          "name": "react_type",
+          "type": "int32",
+          "description": "触发情绪的事件类型，配合emotion_state使用"
+        },
+        {
+          "name": "flee_attr_flags",
+          "type": "uint32",
+          "description": "[迭代3修复 C2] 逃跑属性标志位。bit0=IsFleeing（1=逃跑中，0=非逃跑）；其余位当前保留。逃跑方向由heading字段携带：FleeState时服务端将heading设置为远离威胁源的角度（度数），客户端FleeState直接用heading驱动逃跑移动方向，无需额外解码方向。原'位掩码'描述无任何bit定义，此次明确：方向不编码进flee_attr_flags，复用heading字段。"
+        },
+        {
+          "name": "schedule_waypoint_id",
+          "type": "int32",
+          "description": "当前日程路点ID，ScheduleIdle状态时有效"
+        },
+        {
+          "name": "anim_group",
+          "type": "int32",
+          "description": "动画组覆盖，用于特殊动画表现"
+        }
+      ]
+    },
+    {
+      "name": "BigWorldNpcTypeNtf",
+      "type": "ntf",
+      "description": "P1新增消息。AOI进入时服务端推送NPC子类型，客户端据此初始化正确的组件集（行人/商贩/警察/动物组件差异化）。",
+      "fields": [
+        {
+          "name": "entity_id",
+          "type": "uint64",
+          "description": "NPC实体ID"
+        },
+        {
+          "name": "npc_type",
+          "type": "int32",
+          "description": "NPC子类型枚举：0=Pedestrian（行人）, 1=Vendor（商贩）, 2=Police（警察）, 3=Animal（动物）"
+        }
+      ],
+      "removed_fields_note": "[迭代3修复 I6] 删除lod_level字段。LOD是客户端按本地玩家与NPC实时距离计算的，服务端无法知道本地玩家距离，推送的lod_level无意义。客户端收到BigWorldNpcTypeNtf后按当前距离自行初始化LodComp（同BigWorldNpcManager每帧的LOD更新逻辑）。",
+      "aoi_volume_note": "[迭代3修复 I7] 玩家进入AOI时BigWorldNpcTypeNtf逐条推送（每NPC一条）。当前P1阶段AOI内BigWorld NPC通常<20个（按现有npc_zone_quota配置），峰值消息量在手游网络预算内，暂不需要BatchNtf。若后续NPC密度提升到50+，P2阶段再评估BigWorldNpcTypeBatchNtf（列表合并）。"
+    }
+  ],
+  "proto_workflow": {
+    "p0_p1_change": "无新消息，在old_proto中激活NpcSyncState的emotion_state字段供大世界NPC写入",
+    "p1_new_message": "BigWorldNpcTypeNtf需在old_proto/_tool_new/1.generate.py生成后才可使用",
+    "generated_paths": {
+      "server": "P1GoServer/common/proto/",
+      "client": "freelifeclient/Assets/Scripts/Gameplay/Managers/Net/Proto/"
+    }
+  },
+  "npc_state_enum": {
+    "description": "服务端推送的npc_state枚举值（客户端FSM状态映射依据）",
+    "values": [
+      {
+        "value": 0,
+        "name": "Idle",
+        "client_state": "BigWorldNpcIdleState"
+      },
+      {
+        "value": 1,
+        "name": "Move",
+        "client_state": "BigWorldNpcMoveState"
+      },
+      {
+        "value": 2,
+        "name": "Flee",
+        "client_state": "BigWorldNpcFleeState"
+      },
+      {
+        "value": 3,
+        "name": "Nervous",
+        "client_state": "BigWorldNpcNervousState"
+      },
+      {
+        "value": 4,
+        "name": "Curious",
+        "client_state": "BigWorldNpcCuriousState"
+      },
+      {
+        "value": 5,
+        "name": "Angry",
+        "client_state": "BigWorldNpcAngryState"
+      },
+      {
+        "value": 6,
+        "name": "ScheduleIdle",
+        "client_state": "BigWorldNpcScheduleIdleState（已有）"
+      },
+      {
+        "value": 7,
+        "name": "Scenario",
+        "client_state": "BigWorldNpcScenarioState（已有）"
+      },
+      {
+        "value": 8,
+        "name": "Turn",
+        "client_state": "BigWorldNpcTurnState（已有）"
+      }
+    ]
+  }
+}

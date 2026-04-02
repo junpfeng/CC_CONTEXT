@@ -1,0 +1,108 @@
+{
+  "name": "GTA5动物系统复刻Phase1",
+  "overview": "在现有4种动物基础上升级行为（攻击/逃跑/群体/感知）和交互体验（头顶气泡投喂/轮盘召唤），数量提升到20只",
+  "classification": "direct",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "动物数量提升与Chicken行为解锁",
+      "description": "动物总数从8提升到20（Dog4+Croc4+Bird6+Chicken6），Chicken解除Rest锁定启用Idle/Wander",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "大世界生成20只动物，种类分布正确",
+        "Chicken能正常Idle↔Wander切换"
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "title": "感知系统",
+      "description": "动物视觉+听觉感知。视觉范围Bird30m/Dog20m/Croc15m/Chicken10m。枪声扩大逃跑半径至2倍视觉范围",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "玩家进入各动物视觉范围时触发对应行为（逃跑/攻击）",
+        "枪声事件触发2倍范围内动物反应"
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "title": "逃跑行为",
+      "description": "被动动物（Dog/Bird/Chicken）感知威胁后逃跑，方向为威胁源反方向±15°随机偏移",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "被动动物接近时触发逃跑",
+        "逃跑方向背离玩家，有随机偏移",
+        "客户端AnimalFleeState播放正确动画"
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "title": "鳄鱼攻击系统（演示级）",
+      "description": "鳄鱼15m感知、5m攻击。攻击表现：动画+镜头轻震+推开2m。不扣血，不可反击",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "鳄鱼感知后接近玩家",
+        "5m内触发攻击动画+推开效果",
+        "不造成HP伤害",
+        "攻击后冷却再回归巡逻"
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "title": "群体行为",
+      "description": "同种动物5-10m内成群2-4只，第一只感知威胁后其余0.3-0.5s跟随逃跑，方向一致",
+      "priority": "P1",
+      "side": "server",
+      "acceptance_criteria": [
+        "同种动物成群生成",
+        "群内一只逃跑后其余跟随逃跑",
+        "逃跑方向基本一致"
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "title": "投喂交互优化",
+      "description": "狗头顶3D气泡投喂按钮，3m范围触发，无需食物消耗，投喂后Follow30s",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "靠近狗头顶出现投喂按钮",
+        "点击触发投喂，无需物品",
+        "投喂后狗跟随30s"
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "title": "召唤狗轮盘/按钮",
+      "description": "在GTA5风格互动轮盘中新增召唤狗选项，或退化为快捷按钮。替代Alt+P",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": [
+        "通过轮盘或快捷按钮可召唤最近50m内的狗",
+        "召唤成功后狗跑向玩家"
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "title": "协议扩展",
+      "description": "AnimalData新增group_id/threat_source_id，AnimalState新增Flee=6/Attack=7",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "协议生成后双端编译通过",
+        "新字段在同步中正确传递"
+      ]
+    }
+  ],
+  "technical_constraints": [
+    {"category": "性能", "description": "手机端AI<2ms/帧，20只动物LOD降频"},
+    {"category": "资源", "description": "鳄鱼无现成攻击动画，可能需用walk加速模拟"},
+    {"category": "架构", "description": "复用OrthogonalPipeline和现有Handler模式"}
+  ],
+  "projects": ["P1GoServer", "freelifeclient", "old_proto"],
+  "dependencies": ["old_proto协议生成工具", "Unity MCP验收"],
+  "risks": ["鳄鱼攻击动画缺失需临时方案", "轮盘UI挂载点可能需新建"]
+}

@@ -1,0 +1,1 @@
+{"csharpCode":"using UnityEngine;\nusing FL.NetModule;\npublic class Script {\n    public static object Main() {\n        var req = new GMOperateReq();\n        req.OperateCmd = \"/ke* gm teleport -85 60 -1856\";\n        NetCmd.GmOperate(req);\n        return \"teleport sent\";\n    }\n}"}

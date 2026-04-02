@@ -1,0 +1,399 @@
+{
+  "server_design": {
+    "overview": "服务端改动集中在 scene_server 的 NPC 子系统：改造 BigWorldNpcSpawner（footwalk 过滤+配额）、完善 BigWorldExtHandler（资源释放）、扩展 Map 路网查询（按类型过滤）、新增 WalkZone 配额计算器、接入巡逻路线系统。不改动 Pipeline 核心框架。",
+
+    "data_models": [
+      {
+        "name": "WalkZoneConfig",
+        "storage": "memory",
+        "file": "npc_zone_quota.json",
+        "load_path": "bin/config/npc_zone_quota.json（由 RawTables/Json/Server/ 打表分发）",
+        "description": "WalkZone 配额总配置",
+        "fields": [
+          {"name": "totalNpcBudget", "type": "int", "default": 50, "description": "NPC 总预算（所有 zone 合计，固定上限不随玩家数变化）"},
+          {"name": "recycleHysteresis", "type": "int", "default": 5, "description": "回收滞后阈值，防止抖动"},
+          {"name": "quotaInterval", "type": "float64", "default": 5.0, "description": "配额重算间隔（秒）"},
+          {"name": "zones", "type": "[]ZoneEntry", "description": "分区列表"},
+          {"name": "<!-- [迭代19修复] C4+I1: 删除 perPlayerBase 字段（原 Calculate 公式中引用但未定义）。配额公式统一改为按 densityWeight 归一化分配 totalNpcBudget，playerCount 不参与计算 -->", "type": "注释", "description": "perPlayerBase 已废弃。新公式：quota = min(zone.maxNpc, ceil(totalNpcBudget × zone.densityWeight / sumActiveDensityWeights))，与 scope_decisions.multi_player_quota_semantics 一致"}
+        ]
+      },
+      {
+        "name": "ZoneEntry",
+        "storage": "memory",
+        "description": "单个 WalkZone 分区",
+        "fields": [
+          {"name": "zoneId", "type": "string", "description": "分区 ID（downtown_walk/park_walk/suburb_walk/beach_walk/commercial_walk）"},
+          {"name": "minX", "type": "float32", "description": "AABB 最小 X"},
+          {"name": "minZ", "type": "float32", "description": "AABB 最小 Z"},
+          {"name": "maxX", "type": "float32", "description": "AABB 最大 X"},
+          {"name": "maxZ", "type": "float32", "description": "AABB 最大 Z"},
+          {"name": "densityWeight", "type": "float32", "default": 1.0, "description": "密度权重（市中心 > 郊区）"},
+          {"name": "maxNpc", "type": "int", "default": 15, "description": "单分区硬上限"}
+        ]
+      },
+      {
+        "name": "PatrolRoute（扩展字段）",
+        "storage": "memory",
+        "file": "patrol_config.go",
+        "description": "巡逻路线配置，新增 WalkZone 字段",
+        "new_fields": [
+          {"name": "walkZone", "type": "string", "json": "walkZone", "description": "所属 WalkZone ID，用于配额分配时路线-分区关联"}
+        ],
+        "existing_fields_unchanged": ["routeId", "name", "routeType", "desiredNpcCount", "nodes"]
+      },
+      {
+        "name": "roadsByType 索引（Map 新增）",
+        "storage": "memory",
+        "file": "map.go",
+        "description": "Map 结构体新增按类型分组的路网索引",
+        "fields": [
+          {"name": "roadsByType", "type": "map[RoadNetworkType][]*RoadNetwork", "description": "Init 时自动构建，key 为 footwalk/driveway"}
+        ]
+      }
+    ],
+
+    "modules": [
+      {
+        "name": "BigWorldNpcSpawner（改造）",
+        "file": "ecs/res/npc_mgr/bigworld_npc_spawner.go",
+        "changes": [
+          {
+            "what": "initSpawnPoints 改为仅从 footwalk 子路网获取",
+            "how": "调用 Map.GetPointsByType(RoadNetworkTypeFootwalk) 替换原 GetAllPointPositions()",
+            "why": "NPC 不生成在机动车道上"
+          },
+          {
+            "what": "新增 WalkZone 配额逻辑",
+            "how": "新增 walkZoneConfig *WalkZoneConfig 字段 + TickQuota() 方法。TickQuota 在 TickSpawn 前调用，计算各 zone 需求/回收数量",
+            "why": "实现均匀分布"
+          },
+          {
+            "what": "生成位置改为巡逻路线节点",
+            "how": "spawnOne 从 PatrolRouteManager 选负载最低路线 → 从路线节点选最近位置",
+            "why": "NPC 生成即进入巡逻，无需额外寻路到路线起点"
+          },
+          {
+            "what": "<!-- [迭代17修复] I5: 明确 schedule_id 分配策略，防止实现者随机填 0/-1 导致 P1 迭代回头修改 Spawner --> spawnOne 中填充 NpcV2Info.schedule_id",
+            "how": "P0 阶段：scheduleId = 0（无日程），在 spawnOne 生成 NpcV2Info 时显式赋值 ScheduleId = 0，代码注释标注 'P1 扩展点：按 WalkZone 类型或时间段从配置表选取对应 schedule_id'",
+            "why": "schedule_id=0 表示无日程（NPC 无时段切换行为），P0 阶段明确赋值而非依赖零值，便于 P1 迭代时通过 grep 'P1 扩展点' 快速定位修改入口；P1 策略草案：按 ZoneEntry.zoneId 映射到 schedule_config 表，time_period 由 scene_impl 的全局时钟提供"
+          }
+        ],
+        "new_fields": [
+          "walkZoneConfig *WalkZoneConfig",
+          "zoneNpcCount map[string]int",
+          "quotaTimer float64",
+          "patrolMgr *patrol.PatrolRouteManager",
+          "<!-- [迭代13修复] I3: 动态 CfgId 计数器由 BigWorldNpcSpawner 持有 --> <!-- [迭代17修复] N1: 计数器加溢出保护，防止 int32 变正数与配置表 ID 碰撞 --> _dynamicCfgIdCounter int32 — 初始值 0，生成动态 NPC 时自增，分配公式：cfgId = -(sceneId*10000 + _dynamicCfgIdCounter++)，保证单 Scene 内唯一；counter 上限 = 9999（即 _dynamicCfgIdCounter > 9999 时重置为 0 循环复用）；循环复用时已回收的旧 entity 已不存在，cfgId 复用安全；选 9999 确保最大负值 -(9999*10000+9999) = -99999999 远小于 int32 最小值 -2147483648，无溢出风险。多 Scene 实例因 sceneId 不同自然隔离，无跨 Scene 冲突。Scene Server 重启后计数器重置为 0 属正常行为——动态 cfgId 不用于全局唯一索引，问题追溯依赖 entity_id（全局唯一），日志必须同时打印 npc_entity_id 和 npc_cfg_id"
+        ],
+        "new_methods": [
+          "loadWalkZoneConfig(configPath string) error",
+          "TickQuota(players []common.Entity)",
+          "getZoneForPosition(pos *transform.Vec3) string — <!-- [迭代7修复] I4: 先做严格 AABB 边界判断（minX<=x<=maxX && minZ<=z<=maxZ），不在任何 AABB 内则返回空字符串；仅在有多个 AABB 包含该点时才用 DistanceSqToCenter 最小策略选唯一结果。返回空字符串时 zoneNpcCount 不计入任何 zone -->",
+          "GMSpawnAt(cfgId int32, pos *transform.Vec3) error"
+        ]
+      },
+      {
+        "name": "BigWorldExtHandler（完善）",
+        "file": "ecs/res/npc_mgr/bigworld_ext_handler.go",
+        "changes": [
+          {
+            "what": "OnNpcDestroyed 补充资源释放",
+            "how": "调用 patrolNpcCleaner.Clean(cfgId) 和 scenarioNpcCleaner.Clean(cfgId)（参考 TownNpcExtHandler 实现）",
+            "why": "防止巡逻路线和场景点泄漏"
+          },
+          {
+            "what": "OnNpcCreated 接入巡逻路线分配",
+            "how": "从 NPC 配置表读 patrolRouteIds → PatrolRouteManager.AssignNpc 分配路线",
+            "why": "NPC 创建时自动进入巡逻"
+          }
+        ],
+        "new_fields": [
+          "patrolNpcCleaner *patrol.NpcCleaner",
+          "scenarioNpcCleaner *scenario.NpcCleaner"
+        ]
+      },
+      {
+        "_comment_c3": "<!-- [迭代3修复] C3: RoadNetQuerier 接口必须同步扩展，否则 NpcMoveComp 通过接口无法调用 ByType 方法 -->",
+        "name": "RoadNetQuerier 接口扩展",
+        "file": "common/ai/execution/handlers/schedule_handlers.go",
+        "changes": [
+          {
+            "what": "RoadNetQuerier 接口新增 ByType 方法",
+            "how": "在 RoadNetQuerier 接口中新增：FindNearestPointIDByType(pos *transform.Vec3, roadType RoadNetworkType) (int, int64, *transform.Vec3) 和 FindPathByType(startID, endID int, roadType RoadNetworkType) ([]int, error)",
+            "why": "NpcMoveComp/syncNpcMovement 通过 RoadNetQuerier 接口调用路网，接口不扩展则 footwalk 过滤无法传递"
+          }
+        ]
+      },
+      {
+        "name": "Map 路网查询扩展（实现 RoadNetQuerier 新增方法）",
+        "file": "ecs/res/road_network/map.go",
+        "changes": [
+          {
+            "what": "新增 roadsByType 索引",
+            "how": "Init 时遍历所有 RoadNetwork，按 Type 分组到 map[RoadNetworkType][]*RoadNetwork",
+            "why": "支持按类型过滤查询"
+          },
+          {
+            "what": "新增 FindNearestPointIDByType(pos, type)",
+            "how": "仅在 roadsByType[type] 中查找最近路点",
+            "signature": "func (m *Map) FindNearestPointIDByType(pos *transform.Vec3, roadType RoadNetworkType) (int, int64, *transform.Vec3)"
+          },
+          {
+            "what": "新增 FindPathByType(startID, endID, type)",
+            "how": "合并 roadsByType[type] 下所有子路网为统一邻接图再执行 A*，确保跨子路网（如 downtown_walk → park_walk）可达 <!-- [迭代3修复] I4: 明确跨子路网寻路策略，所有 footwalk 子路网在路口处有桥接边连接，逻辑上是一个大图 --> <!-- [迭代9修复] C2: 节点 ID 唯一性处理 → 实现前先执行 grep pointId bin/config/road_traffic_miami.json 确认字段是否全局唯一（方案B）；若 pointId 在所有子路网中全局唯一（生成脚本保证），直接用 pointId 建图，返回路径为 []int64（各元素为全局 pointId，调用方通过 m.GetPointPos(pointId) 获取坐标）；若各子路网 pointId 独立编号（不唯一），改用方案A：buildGraph 时 globalId = subNetIndex * 1_000_000 + localPointId，FindPathByType 内部使用 globalId，返回路径时还原为 (subNetIndex, localId) 对并附带世界坐标。实现时必须在代码注释中明确标注选用方案及验证依据 -->",
+            "signature": "func (m *Map) FindPathByType(startID, endID int, roadType RoadNetworkType) ([]int, error)"
+          },
+          {
+            "what": "新增 GetPointsByType(type)",
+            "how": "返回指定类型路网的所有路点位置",
+            "signature": "func (m *Map) GetPointsByType(roadType RoadNetworkType) []*transform.Vec3"
+          }
+        ],
+        "backward_compat": "原有 FindNearestPointID 和 FindPath 行为不变，遍历所有子路网"
+      },
+      {
+        "name": "WalkZone 配额计算器（新增）",
+        "file": "ecs/res/npc_mgr/bigworld_walk_zone.go",
+        "description": "独立文件封装 WalkZone 配额逻辑",
+        "_comment_c1_fix": "<!-- [迭代7修复] C1: 去除 currentCount 字段，WalkZoneQuotaCalculator 为无状态计算器，currentCounts 由调用方（BigWorldNpcSpawner.zoneNpcCount）传入 -->",
+        "structs": [
+          {
+            "name": "WalkZoneQuotaCalculator",
+            "fields": [
+              "config *WalkZoneConfig"
+            ],
+            "_removed_c1": "currentCount map[string]int 已移除——计数唯一来源是 BigWorldNpcSpawner.zoneNpcCount，不在此持有",
+            "methods": [
+              "NewWalkZoneQuotaCalculator(config *WalkZoneConfig) *WalkZoneQuotaCalculator",
+              "<!-- [迭代13修复] I1: 明确多玩家 AOI 重叠时配额计算语义 --> <!-- [迭代19修复] C4+I1: 删除矛盾的 playerCount×perPlayerBase 公式，统一为 densityWeight 归一化分配 --> Calculate(playerPositions []*transform.Vec3, spawnRadius float32, currentCounts map[string]int) map[string]QuotaResult — 配额公式：sumActiveDensityWeights = 所有被玩家 AOI 覆盖的 Zone 的 densityWeight 之和；quota = min(zone.maxNpc, ceil(totalNpcBudget × zone.densityWeight / sumActiveDensityWeights))；playerCount 不参与配额计算，多玩家覆盖同一 Zone 时配额与单玩家一致（Zone 去重后仅计一份 densityWeight），确保 totalNpcBudget=50 的硬上限在任意玩家数下不被突破。此公式与 plan.json scope_decisions multi_player_quota_semantics 一致，取代原 '× playerCount × perPlayerBase' 写法",
+              "GetZoneForPos(pos *transform.Vec3) string",
+              "IsInZone(pos *transform.Vec3, zone *ZoneEntry) bool"
+            ]
+          },
+          {
+            "name": "QuotaResult",
+            "fields": [
+              "zoneId string",
+              "quota int",
+              "current int",
+              "deficit int",
+              "surplus int"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "scene_impl.go（修改初始化）",
+        "file": "ecs/scene/scene_impl.go",
+        "changes": [
+          {
+            "what": "大世界初始化时加载巡逻路线并注入",
+            "how": "在 BigWorld 分支中：1) 创建 PatrolRouteManager 并加载 bigworld/ 路线 2) 传给 InitLocomotionManagers 替换 nil",
+            "why": "REQ-001 修复 patrolQuerier 为 nil 的问题"
+          },
+          {
+            "_comment_c2_fix": "<!-- [迭代7修复] C2: 补充 V2Brain bigworld_ 配置加载，否则 locomotion/engagement/expression 三维度不激活，NPC 生成后原地不动 -->",
+            "what": "加载 bigworld_ 前缀 V2Brain 配置并关联到 BigWorld Pipeline",
+            "prerequisite_check": "<!-- [迭代9修复] I1 --> 实现前执行：grep -r 'LoadByPrefix' P1GoServer/servers/scene_server/ 确认方法存在。若不存在，需先创建：V2BrainConfigLoader.LoadByPrefix(prefix string, dir string) 遍历 dir 下以 prefix 开头的 JSON 文件，反序列化为 []BrainConfig；通过 PipelineFactory.GetPipeline(BigWorldPipelineType) 获取实例，遍历 BrainConfig 列表调用各维度 Handler.SetBrainConfig(config)。创建完成后再调用",
+            "how": "PatrolRouteManager 创建后，调用 V2BrainConfigLoader.LoadByPrefix('bigworld_', 'bin/config/ai_decision_v2/') 加载三个配置文件（bigworld_locomotion.json / bigworld_engagement.json / bigworld_expression.json）。通过 PipelineType=BigWorld 查找对应 Pipeline 实例，将加载的 BrainConfig 注入各维度 Handler",
+            "why": "V2Brain 通过 PipelineType 区分大世界与小镇（bigworld_ vs town_ 前缀），不在此处注入则 BigWorld NPC 的 AI 维度永远不激活",
+            "code_location_hint": "在 BigWorld 分支的 InitLocomotionManagers 调用之后、Spawner 初始化之前"
+          }
+        ],
+        "code_location": "约第 195 行 BigWorld CitySceneInfo 分支"
+      },
+      {
+        "name": "patrol_config.go（扩展）",
+        "file": "common/ai/patrol/patrol_config.go",
+        "changes": [
+          {
+            "what": "PatrolRoute 新增 WalkZone 字段",
+            "how": "添加 WalkZone string `json:\"walkZone\"` 字段，JSON 反序列化自动填充",
+            "why": "配额系统需要知道路线属于哪个分区"
+          }
+        ]
+      },
+      {
+        "_comment_c1_fix": "<!-- [迭代9修复] C1: 补充 PatrolHandler.OnTick 重试逻辑设计，防止路线满员时 NPC 永久 Idle --> <!-- [迭代17修复] C1: 消除每 Tick 重试导致的 CPU 螺旋，明确 circuit breaker 语义，统一重试与放弃的状态机 -->",
+        "name": "PatrolHandler（OnTick 重试逻辑）",
+        "file": "common/ai/execution/handlers/patrol_handler.go（现有文件）",
+        "circuit_breaker_fields": {
+          "_note": "以下字段存储于 NpcState（已有扩展机制），随实体生命周期自动重置",
+          "retryIntervalMs": "int = 5000（5秒），间隔内 RetryIntervalAccum 未超阈值则不重试",
+          "retryIntervalAccum": "int，当前积累的等待毫秒数，每 Tick 增加 deltaMs",
+          "retryCount": "int，已重试次数，初始值 0，成功分配后重置为 0",
+          "maxRetry": "int = 3（全局常量），超限后设 AssignFailed = true",
+          "assignFailed": "bool，true 后不再重试，实体销毁（despawn）时随 NpcState 一起销毁，respawn 后重置"
+        },
+        "changes": [
+          {
+            "what": "OnTick 中增加路线未分配时的带 circuit breaker 重试逻辑",
+            "how": "<!-- [迭代17修复] C1: 原方案每 Tick 重试，路线满员时 50 NPC × 20tps = 1000次/s 路网查询，形成 CPU 螺旋；新方案引入 circuit breaker 控制频率和终止条件 --> OnTick 开头：① if NpcState.AssignFailed { return }（已放弃，跳过）；② if NpcState.AssignedRouteId == 0 { NpcState.RetryIntervalAccum += deltaMs; if NpcState.RetryIntervalAccum < retryIntervalMs { return }（5s 内不重试）; NpcState.RetryIntervalAccum = 0; ok = PatrolRouteManager.AssignNpc(npcCfgId, patrolRouteIds); if !ok { NpcState.RetryCount++; if NpcState.RetryCount >= maxRetry { NpcState.AssignFailed = true; log.Warnf(\"[PatrolHandler] npc_entity_id=%v 路线满员超过 maxRetry=%v，标记 AssignFailed，等待 despawn+respawn\", entityId, maxRetry) }; return } NpcState.RetryCount = 0 }; ③ 执行正常巡逻逻辑（读取节点、设置 MoveTarget）",
+            "why": "circuit breaker 将重试频率从 1000次/s 降至最大 10次/s（50 NPC × 1次/5s）；maxRetry=3 后标记 AssignFailed 彻底退出重试循环，路线空出后由下次 respawn 自动重新分配，不依赖运行时扫描",
+            "edge_case": "patrolRouteIds 来自 NPC 配置表字段（已在 OnNpcCreated 时缓存到 NpcState 或 ExtData），OnTick 重试时直接读取，不重新查配置表。AssignFailed NPC 保持 Idle 动画，不影响其他系统"
+          }
+        ]
+      },
+      {
+        "name": "syncNpcMovement 优先级策略（新增）",
+        "_comment_i2": "<!-- [迭代17修复] I2: 补充 MonsterTransformUpdate 节流时的 NPC 选取优先级，防止近距离 NPC 因轮询被延迟 165ms 导致插值跳动 -->",
+        "file": "servers/scene_server/internal/net_func/sync_npc_movement.go（或 syncNpcMovement 实现所在文件）",
+        "changes": [
+          {
+            "what": "每帧发送 15 个 NPC 更新时按距离优先级排序",
+            "how": "<!-- [迭代19修复] I5: 明确 syncNpcMovement 是每个在线玩家独立调用，各自维护各自的 15 NPC/frame 预算，距离排序相对各玩家自身位置计算 --> syncNpcMovement 按玩家维度独立执行：对每个 online player 单独调用一次，在选取本帧 15 个待推送 NPC 时：1) 计算每个活跃 NPC 到该玩家的距离平方（XZ 平面）；2) 按距离升序排列候选列表；3) 取前 15 个推送给该玩家；4) 同距离档（差值 < 10m²）内用 round-robin 轮转保证公平性。禁止用单一玩家（如 player A）的距离排序决定所有玩家的推送优先级，否则 player B 附近的 NPC 会因距 A 较远被持续压制",
+            "why": "活跃 NPC > 15 时，距离玩家最近的 NPC（<10m）若按 round-robin 被延迟，在 50 NPC @20fps 场景下平均 3.3 帧才更新一次（165ms），TransformSnapshotQueue 插值将出现明显跳动；距离优先确保近处 NPC 每帧都被覆盖",
+            "perf_note": "距离平方排序 O(N log N)，N=50 时约 6μs，远小于帧时间 50ms，无性能问题"
+          }
+        ]
+      },
+      {
+        "name": "GM 命令（新增）",
+        "file": "ecs/res/npc_mgr/bigworld_gm.go",
+        "description": "大世界 NPC GM 调试命令",
+        "auth_policy": "<!-- [迭代17修复] I6: 明确 GM 鉴权方式，防止新实现绕过鉴权 --> 所有 bw_npc GM 命令沿用现有 GM 鉴权机制（/ke* gm 前缀校验），不新增独立鉴权逻辑。命令格式：/ke* gm bw_npc <subcommand>。鉴权失败时返回标准 GM 错误响应，不执行业务逻辑。实现时复用 GmSystem.CheckPermission（参考现有 GM Handler 写法），禁止直接暴露 RPC 接口绕过前缀校验",
+        "commands": [
+          {
+            "command": "/ke* gm bw_npc spawn {cfgId}",
+            "handler": "handleBwNpcSpawn",
+            "logic": "校验 cfgId → 查找玩家附近 footwalk 路点 → 调用 BigWorldNpcSpawner.GMSpawnAt → 返回结果"
+          },
+          {
+            "command": "/ke* gm bw_npc clear",
+            "handler": "handleBwNpcClear",
+            "logic": "调用 BigWorldNpcSpawner.GMClearAll → 返回清除数量"
+          },
+          {
+            "command": "/ke* gm bw_npc info",
+            "handler": "handleBwNpcInfo",
+            "logic": "返回当前 NPC 数量、各 WalkZone 配额状态、巡逻路线占用情况"
+          }
+        ]
+      }
+    ],
+
+    "config_files": [
+      {
+        "file": "npc_zone_quota.json",
+        "source": "freelifeclient/RawTables/Json/Server/npc_zone_quota.json",
+        "target": "bin/config/npc_zone_quota.json",
+        "description": "WalkZone 配额配置，打表自动分发",
+        "example": {
+          "totalNpcBudget": 50,
+          "recycleHysteresis": 5,
+          "quotaInterval": 5.0,
+          "zones": [
+            {"zoneId": "downtown_walk", "minX": -500, "minZ": -500, "maxX": 500, "maxZ": 500, "densityWeight": 2.0, "maxNpc": 15},
+            {"zoneId": "park_walk", "minX": 500, "minZ": -200, "maxX": 1000, "maxZ": 300, "densityWeight": 1.5, "maxNpc": 12},
+            {"zoneId": "suburb_walk", "minX": -1000, "minZ": 500, "maxX": 0, "maxZ": 1500, "densityWeight": 0.8, "maxNpc": 10},
+            {"zoneId": "beach_walk", "minX": -1500, "minZ": -1000, "maxX": -500, "maxZ": -200, "densityWeight": 1.0, "maxNpc": 10},
+            {"zoneId": "commercial_walk", "minX": 0, "minZ": 500, "maxX": 800, "maxZ": 1200, "densityWeight": 1.2, "maxNpc": 12}
+          ]
+        }
+      },
+      {
+        "file": "ai_patrol/bigworld/*.json",
+        "source": "freelifeclient/RawTables/Json/Server/ai_patrol/bigworld/",
+        "target": "bin/config/ai_patrol/bigworld/",
+        "description": "大世界巡逻路线 JSON（15-25 条，脚本自动生成）",
+        "example_single_route": {
+          "routeId": 1001,
+          "name": "downtown_patrol_01",
+          "routeType": 0,
+          "walkZone": "downtown_walk",
+          "desiredNpcCount": 3,
+          "nodes": [
+            {"nodeId": 1, "position": {"X": 100.0, "Y": 5.0, "Z": 200.0}, "heading": 0.0, "duration": 0, "behaviorType": 0, "links": [2]},
+            {"nodeId": 2, "position": {"X": 150.0, "Y": 5.2, "Z": 250.0}, "heading": 1.57, "duration": 5000, "behaviorType": 1, "links": [3]},
+            {"nodeId": 3, "position": {"X": 200.0, "Y": 5.1, "Z": 220.0}, "heading": 3.14, "duration": 0, "behaviorType": 0, "links": [1]}
+          ]
+        }
+      },
+      {
+        "file": "ai_decision_v2/bigworld_*.json",
+        "source": "bin/config/ai_decision_v2/（直放）",
+        "target": "bin/config/ai_decision_v2/",
+        "description": "V2Brain 大世界 4 维度决策配置（已有框架，需创建 bigworld_ 前缀文件）",
+        "_comment_n2": "<!-- [迭代19修复] N2: 明确三个 bigworld_*.json 的创建责任和初始内容来源，防止文件缺失导致 NPC 静默不动 --> 三个配置文件（bigworld_locomotion.json / bigworld_engagement.json / bigworld_expression.json）由实现者手动创建：① bigworld_locomotion.json：从对应的 town_locomotion.json 复制并修改（去除 wander 状态，保留 patrol 状态），内容参考 plan.json file_list 中 bigworld_locomotion.json 的 description 字段；② bigworld_engagement.json 和 bigworld_expression.json：P1 功能，P0 阶段创建空框架（{\\\"name\\\":\\\"bigworld_engagement\\\",\\\"dimension\\\":\\\"engagement\\\",\\\"states\\\":[]}），占位以保证 LoadByPrefix 不报错。testing ST-001 中补充验证：三个 bigworld_*.json 文件存在且非空；Pipeline 初始化后 HandlerCount > 0（V2Brain 三维度均激活），否则 bigworld_locomotion.json 内容有误"
+      }
+    ],
+
+    "scripts": [
+      {
+        "name": "generate_ped_road.py",
+        "path": "scripts/generate_ped_road.py",
+        "description": "从车辆路网派生行人路网",
+        "_comment_i1_fix": "<!-- [迭代7修复] I1: 明确 Unity Editor 依赖、Y 修正失败 fallback、prerequisites 文档 -->",
+        "prerequisites": "脚本顶部注释必须包含：'Prerequisites: Unity Editor must be running with MCP enabled (port 8080)'",
+        "y_correction_fallback": "Y 坐标修正（mcp_call.py → Physics.Raycast）失败时：打印 WARNING 'Y correction failed for N points, falling back to vehicle Y + 0.2m offset'，用车道 Y + 0.2m 作为 fallback 值，不静默跳过",
+        "input": "bin/config/road_traffic_miami.json（50K 路点）",
+        "output": "RawTables/Json/Server/miami_ped_road.json",
+        "algorithm": [
+          "1. 读取车辆路网所有路段",
+          "2. 对每条路段计算法线方向",
+          "3. 沿法线偏移 4m（窄路 <8m 取 2m）生成人行道路点",
+          "3a. <!-- [迭代17修复] I3: 横向偏移后做 NavMesh/A* 有效性校验，过滤建筑内或悬空路点 --> 有效性校验：对每个偏移后路点调用 A* Pathfinding Project 的 AstarPath.active.GetNearest(point) 检查，若最近图节点距离 > 1m，则标记该路点为无效并跳过（不写入输出）；校验通过 MCP mcp__ai-game-developer__script-execute 执行，需 Unity Editor + MCP 可用。校验完成后输出统计：'[NavMesh校验] 总路点=%d，有效=%d，过滤=%d（%.1f%%）'；过滤比例 > 30% 时输出 WARNING 提示检查偏移参数",
+          "4. 路点 Y 坐标 = 车道 Y（生成阶段即修正：脚本中对每个路点从 Y=200 向下 Raycast Grounds 层修正 Y 坐标，参考 feedback_bigworld_y_offset） <!-- [迭代3修复] 遗漏场景4: Y坐标修正时机明确为生成阶段 -->",
+          "5. 标记 type = footwalk",
+          "6. <!-- [迭代19修复] C1: 删除 K-means 描述，与 scope_decisions clustering_algorithm 统一 --> 按固定 512m×512m 网格划分 WalkZone（与大世界坐标系对齐）：每个含有 footwalk 路点的非空网格形成独立子路网，AABB 即为网格边界；输出各 WalkZone 的 zoneId/aabb/路点数量到 npc_zone_quota.json zones 参考，供配额配置初始值填写",
+          "7. 生成路点间连接关系（相邻路段路点自动连通）",
+          "7a. <!-- [迭代3修复] C2: 路口连通性保证 --> 路口检测：识别车辆路网 junction 节点（degree>=3），对其周围偏移路点添加桥接连接（向路口中心收缩 2m 生成桥接路点，连接各路段的偏移路点）",
+          "7b. <!-- [迭代3修复] C2: 连通性验证 --> 生成后对所有 footwalk 路点执行 BFS 验证连通分量数。若存在多个分量，在最近的跨分量路点对之间补充桥接边",
+          "7c. <!-- [迭代3修复] C2: 连通性报告 --> 输出连通性报告到 stdout：总路点数、连通分量数、桥接边数、孤立点数（供人工审查）",
+          "8. 输出 miami_ped_road.json + npc_zone_quota.json 中 zones 的 AABB"
+        ]
+      },
+      {
+        "name": "generate_patrol_routes.py",
+        "path": "scripts/generate_patrol_routes.py",
+        "description": "从行人路网自动生成环形巡逻路线",
+        "input": "RawTables/Json/Server/miami_ped_road.json",
+        "output": "RawTables/Json/Server/ai_patrol/bigworld/*.json（15-25 条）",
+        "algorithm": [
+          "1. 按 WalkZone 分组读取 footwalk 路点",
+          "2. 每个 zone 生成 3-5 条环形路线",
+          "3. 每条路线选 8-15 个稀疏关键点（间距 50-100m）",
+          "4. 30% 节点设置 duration=3000-8000ms + behaviorType（驻足/观景）",
+          "5. 确保路线内节点顺序连通（A* 可达）",
+          "6. 设置 desiredNpcCount = 2-4（根据路线长度）",
+          "6a. <!-- [迭代3修复] I5: 约束路线容量与总预算关系 --> 生成完毕后校验 sum(desiredNpcCount) >= totalNpcBudget * 1.5（即 >= 75），不满足则调高稀疏路线的 desiredNpcCount 直至满足。确保路线容量充足，避免路线满员但配额未用满",
+          "7. 输出 JSON 到 ai_patrol/bigworld/ 目录",
+          "8. <!-- [迭代19修复] N3: 生成完成后执行数量校验，防止输出不可用的巡逻配置 --> 数量校验：统计各 WalkZone 至少 1 条路线且总路线数 >= 5；若不满足，输出 ERROR '路线生成不足：total=%d，zone覆盖=%d，请检查路网连通性（BFS 报告中孤立分量数）' 并以非零退出码（exit(1)）退出，不产出无效配置文件"
+        ]
+      }
+    ],
+
+    "error_codes": [
+      {
+        "code": "ERR_NPC_ROAD_NOT_FOUND",
+        "value": "待分配",
+        "description": "footwalk 路网未加载或文件缺失",
+        "trigger": "scene_impl 初始化时行人路网 JSON 不存在或解析失败",
+        "_comment_i4": "<!-- [迭代13修复] I4: 明确降级行为——禁止回退到 GetAllPointPositions（含车道路点），否则行人会出现在机动车道违反 REQ-002 -->",
+        "handling": "BigWorldNpcSpawner.initSpawnPoints 跳过（候选点列表为空），Spawner 不生成任何 NPC（Spawner.disabled = true）。使用 log.Errorf 输出明确错误（非 Warnf）。严禁回退到 GetAllPointPositions 或任何包含 driveway 路点的接口——行人出现在机动车道是 REQ-002 禁止的严重问题"
+      },
+      {
+        "code": "ERR_NPC_PATROL_FULL",
+        "value": "待分配",
+        "description": "所有巡逻路线满员",
+        "trigger": "AssignNpc 时所有路线 NPC 数 >= desiredNpcCount",
+        "handling": "暂停生成，返回 nil 路线"
+      },
+      {
+        "code": "ERR_NPC_INVALID_CFG",
+        "value": "待分配",
+        "description": "无效的 NPC 配置 ID",
+        "trigger": "GM 命令 cfgId 在配置表中不存在",
+        "handling": "返回 GM 错误提示"
+      },
+      {
+        "code": "ERR_NPC_ZONE_NOT_FOUND",
+        "value": "待分配",
+        "description": "NPC 位置不在任何 WalkZone 内",
+        "trigger": "getZoneForPosition 未匹配任何 AABB",
+        "_comment_i1": "<!-- [迭代3修复] I1: 不归入最近zone，避免远郊NPC虚占市中心配额 -->",
+        "handling": "NPC 不计入任何 zone 配额（返回空 zoneId）。initSpawnPoints 阶段过滤掉不在任何 zone AABB 内的 footwalk 路点，从源头避免在盲区生成 NPC。日志 Warnf 记录"
+      }
+    ]
+  }
+}

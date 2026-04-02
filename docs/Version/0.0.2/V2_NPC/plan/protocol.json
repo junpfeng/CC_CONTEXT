@@ -1,0 +1,98 @@
+{
+  "design_principle": "协议零新增。大世界 NPC 复用现有 NetEntity 同步通道和 NPC 相关 Ntf 消息，不引入新的 Proto 定义。",
+  "protocols": [
+    {
+      "name": "MonsterTransformUpdate",
+      "type": "ntf",
+      "status": "existing",
+      "description": "NPC 位置/朝向增量同步，每帧由 syncNpcMovement 生成，客户端 BigWorldNpcMoveComp 通过 TransformSnapshotQueue 消费",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC 实体 ID"},
+        {"name": "position", "type": "Vec3", "description": "世界坐标（X/Y/Z）"},
+        {"name": "heading", "type": "float", "description": "朝向角度（弧度）"},
+        {"name": "speed", "type": "float", "description": "当前移动速度（m/s）"},
+        {"name": "move_state", "type": "int32", "description": "移动状态（0=Idle, 1=Walk, 2=Run）"}
+      ],
+      "sync_strategy": "增量同步，15 NPC/frame 节流，变化的字段才推送",
+      "bandwidth_estimate": "每 NPC 约 32 bytes/frame × 15 = 480 bytes/frame"
+    },
+    {
+      "name": "NpcV2Info",
+      "type": "ntf",
+      "status": "existing",
+      "description": "NPC 创建时一次性推送完整数据包，包含配置 ID、外观、日程等。客户端用于初始化 BigWorldNpcController",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC 实体 ID"},
+        {"name": "cfg_id", "type": "int32", "description": "NPC 配置 ID（动态 ID 从 -1 递减，负数范围与配置表隔离） <!-- [迭代3修复] I6 -->"},
+        {"name": "npc_base_cfg_id", "type": "int32", "description": "NPC 基础配置 ID（外观/模型引用）"},
+        {"name": "appearance_id", "type": "int32", "description": "外观池 ID"},
+        {"name": "schedule_id", "type": "int32", "description": "日程模板 ID"},
+        {"name": "behavior_state", "type": "int32", "description": "当前行为状态"},
+        {"name": "position", "type": "Vec3", "description": "初始位置"},
+        {"name": "heading", "type": "float", "description": "初始朝向（弧度）"},
+        {"name": "part_list", "type": "[]int32", "description": "外观部件列表"}
+      ],
+      "usage": "NPC 创建 + 断线重连全量恢复"
+    },
+    {
+      "name": "NpcPatrolNodeArriveNtf",
+      "type": "ntf",
+      "status": "<!-- [迭代19修复] C3: 状态从 existing 改为 needs_proto_change --> needs_proto_change",
+      "description": "NPC 到达巡逻节点时推送，客户端据此播放驻足/观景/休息等行为动画",
+      "_proto_verification": "<!-- [迭代19修复] C3: 通过 grep -r 'node_position' old_proto/ 验证：old_proto/scene/npc.proto 中 NpcPatrolNodeArriveNtf 当前字段为 npc_id/node_id/behavior_type/duration_ms，不含 node_position 字段。需在实现前修改 old_proto 并运行 1.generate.py。详见 _proto_change_steps -->",
+      "_proto_change_steps": [
+        "1. 修改 old_proto/scene/npc.proto：在 NpcPatrolNodeArriveNtf 中新增 base.Vector3 node_position = 5;（节点世界坐标，客户端位置校准用）",
+        "2. 运行 old_proto/_tool_new/1.generate.py 重新生成两端代码（生成文件写入 P1GoServer/common/proto/ 和 freelifeclient/Assets/Scripts/Gameplay/Managers/Net/Proto/，不得手动修改生成代码）",
+        "3. 服务端 PatrolHandler 发送 NpcPatrolNodeArriveNtf 时填充 node_position 字段（到达节点的 Vec3 坐标）",
+        "4. 客户端 NpcPatrolNodeArriveNtf.cs 中通过 request.NodePosition.ToUnityVector3() 读取该字段",
+        "5. 注意：proto 生成影响所有 service 文件，生成后需执行 make build 确认服务端编译通过，Unity 侧确认无 CS 错误（rule: auto-work-lesson-001）"
+      ],
+      "_scope_decision_note": "协议变更说明：本迭代原计划'协议零新增'，但 node_position 字段为客户端 SnapToPosition 校准的必要数据（无此字段则高延迟场景 NPC 位置漂移），因此在 NpcPatrolNodeArriveNtf 中新增该字段。其余协议仍零新增，整体原则基本保持",
+      "fields": [
+        {"name": "npc_id（proto 字段名）/ entity_id（业务层别名）", "type": "int64", "description": "NPC 实体 ID（proto 用 npc_id，生成的 C# 属性为 NpcId，Go 字段为 NpcId）"},
+        {"name": "behavior_type", "type": "int32", "description": "行为类型（动画枚举 ID，0=无特殊行为）"},
+        {"name": "duration_ms（proto 字段名）/ duration（业务层别名）", "type": "int32", "description": "停留时长（ms），0=不停留直接通过（proto 用 duration_ms，生成的 C# 属性为 DurationMs）"},
+        {"name": "node_position", "type": "base.Vector3", "description": "<!-- [迭代19修复] C3: 需新增字段 --> 节点世界坐标（客户端 SnapToPosition 校准用），old_proto 修改后由 generate.py 生成。实现前验证 grep -r 'node_position' old_proto/ 返回结果"}
+      ],
+      "trigger": "PatrolHandler 检测 NPC 到达节点且 duration > 0 时发送"
+    },
+    {
+      "name": "NpcDataUpdate",
+      "type": "ntf",
+      "status": "existing",
+      "description": "NPC 状态变更增量推送（日程切换、情绪变化等），客户端 DataManager 更新 NpcData",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC 实体 ID"},
+        {"name": "changed_fields", "type": "map<string, any>", "description": "变更的字段键值对"}
+      ],
+      "usage": "日程切换、情绪变化等非位置状态的增量同步"
+    },
+    {
+      "name": "NpcScheduleChangeNtf",
+      "type": "ntf",
+      "status": "existing",
+      "description": "NPC 日程时段切换通知（P1 功能）",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC 实体 ID"},
+        {"name": "schedule_id", "type": "int32", "description": "新日程模板 ID"},
+        {"name": "period_index", "type": "int32", "description": "当前时段索引"}
+      ]
+    },
+    {
+      "name": "NpcEmotionChangeNtf",
+      "type": "ntf",
+      "status": "existing",
+      "description": "NPC 情绪变化通知（P1 功能）",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC 实体 ID"},
+        {"name": "emotion_type", "type": "int32", "description": "情绪类型"},
+        {"name": "intensity", "type": "float", "description": "情绪强度（0-1）"}
+      ]
+    }
+  ],
+  "message_flow_summary": {
+    "npc_lifecycle": "服务端创建 NPC → NpcV2Info 推送 → 客户端初始化 Controller → 持续 MonsterTransformUpdate → 回收时 Entity 删除消息",
+    "patrol_behavior": "PatrolHandler 驱动移动 → MonsterTransformUpdate 推送位置 → 到达节点 → NpcPatrolNodeArriveNtf → 客户端播放行为动画 → duration 到期 → 继续移动",
+    "reconnect": "客户端重连 → 服务端全量推送 AOI 内所有 NPC 的 NpcV2Info → 客户端重建所有 Controller"
+  }
+}

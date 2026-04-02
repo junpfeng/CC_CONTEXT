@@ -1,0 +1,95 @@
+{
+  "name": "载具系统GTA5级提升",
+  "overview": "在已有基础上激活+调优+补缺，提升驾驶手感、渐进损伤、漂移特技三个维度到GTA5级别",
+  "classification": "direct",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "重量转移与抓地力曲线",
+      "description": "启用COMAssisterTypes重量转移，实现基于slip的轮胎抓地力曲线替代固定gripFactor",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["加速时后座感明显", "刹车时前倾", "高速转弯时侧倾导致内侧轮减载"]
+    },
+    {
+      "id": "REQ-002",
+      "title": "侧向阻尼与甩尾",
+      "description": "降低VehiclePhysicDampComp侧向阻尼，配合刹车分配实现高速甩尾",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["高速急转弯车尾自然甩出", "甩尾有渐进过程非瞬间"]
+    },
+    {
+      "id": "REQ-003",
+      "title": "速度-转向衰减",
+      "description": "低速大转角泊车灵活，高速小转角稳定",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": ["低速转弯半径小", "高速转向不会突然失控"]
+    },
+    {
+      "id": "REQ-004",
+      "title": "碰撞网格变形链路",
+      "description": "打通VehicleCollisionHandlerComp碰撞回调到VehicleDamage网格变形的调用链",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["碰撞后车辆外观可见变形或材质变暗"]
+    },
+    {
+      "id": "REQ-005",
+      "title": "损伤性能衰减",
+      "description": "HP降低时maxSpeed/steerAngle/gripFactor按配置比例衰减",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["HP<60%速度明显下降", "HP<40%转向偏移", "HP<20%爆胎效果"]
+    },
+    {
+      "id": "REQ-006",
+      "title": "损伤服务端同步",
+      "description": "新增VehicleDamageNtf协议，服务端推送损伤阶段给其他玩家",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": ["其他玩家能看到车辆烟/火特效", "HP=0时爆炸且不可驾驶"]
+    },
+    {
+      "id": "REQ-007",
+      "title": "漂移检测与计分",
+      "description": "基于wheelSlipAmountSideways新增DriftDetector，漂移角度+速度+持续时间计分",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["拉手刹+转向触发漂移", "漂移时有计分显示"]
+    },
+    {
+      "id": "REQ-008",
+      "title": "手刹强化与漂移反馈",
+      "description": "手刹时后轮抓地力骤降，漂移时触发轮胎痕迹+烟雾+相机FOV+震动",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["后轮产生轮胎痕迹和烟雾", "相机有漂移感"]
+    },
+    {
+      "id": "REQ-009",
+      "title": "翻车恢复",
+      "description": "新增VehicleFlipReq协议，按键施加翻转力矩恢复正位",
+      "priority": "P1",
+      "side": "both",
+      "acceptance_criteria": ["翻车后按键1s内翻正"]
+    },
+    {
+      "id": "REQ-010",
+      "title": "特技扩展",
+      "description": "在VehicleStuntComp新增漂移特技(>3s)、360旋转、两轮行驶检测",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": ["持续漂移3s触发特技事件", "空中360旋转被检测"]
+    }
+  ],
+  "technical_constraints": [
+    {"category": "性能", "description": "手机端性能预算，物理计算不能超过2ms/帧"},
+    {"category": "网络", "description": "损伤同步仅推送阶段变化，不同步网格变形（带宽）"},
+    {"category": "架构", "description": "复用现有组件框架，不引入新框架"}
+  ],
+  "projects": ["freelifeclient", "P1GoServer", "old_proto"],
+  "dependencies": ["vehicle_driving(0.0.4)基础驾驶闭环", "DotsCity ECS交通系统", "现有VehicleDamage/VehicleStuntComp组件"],
+  "risks": ["重量转移参数需多轮运行时调试", "网格变形可能未完整接入需补代码", "漂移手感依赖物理参数平衡"]
+}

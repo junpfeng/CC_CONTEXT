@@ -1,0 +1,86 @@
+{
+  "title": "大世界V2 NPC系统 - 协议设计详情",
+  "design_principle": "零新增Proto消息。大世界NPC完全复用现有NpcDataUpdate/NpcV2Info/TownNpcData协议结构，通过SceneNpcComp→TownNpcComp的字段桥接实现状态同步。",
+
+  "protocols": [
+    {
+      "name": "NpcDataUpdate（复用）",
+      "type": "ntf",
+      "description": "NPC状态增量/全量同步广播。大世界NPC通过AOI系统自动进入该广播范围。",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC实体ID（EntityId是ulong）"},
+        {"name": "components", "type": "repeated ComponentData", "description": "组件数据列表，含Transform/BaseInfo/AnimState/TownNpcData等"},
+        {"name": "is_all", "type": "bool", "description": "true=全量同步（NPC首次进入AOI或断线重连），false=增量同步（脏标记变化字段）"}
+      ],
+      "bigworld_usage": "大世界NPC与小镇NPC使用完全相同的消息格式。服务端通过SetSyncComponentProto按组件类型逐个序列化，客户端按组件类型分发到对应DataSignal。"
+    },
+    {
+      "name": "NpcV2Info（复用）",
+      "type": "embedded",
+      "description": "V2管线NPC的状态子结构，嵌入在TownNpcData中。大世界NPC复用所有现有字段。",
+      "fields": [
+        {"name": "anim_state", "type": "int32", "description": "动画状态枚举（Idle=0,Walk=1,Run=2,Turn=3等）"},
+        {"name": "move_speed", "type": "float", "description": "当前移动速度"},
+        {"name": "heading_deg", "type": "float", "description": "朝向角度（度数，注意单位一致性）"},
+        {"name": "target_pos", "type": "Vector3", "description": "移动目标位置"},
+        {"name": "behavior_state", "type": "int32", "description": "行为状态（sync层统一推导，不在Handler分散写入）"},
+        {"name": "emotion_level", "type": "int32", "description": "情绪等级（MoodLevel [0,3]）"},
+        {"name": "react_type", "type": "int32", "description": "反应类型（逃跑/围观/愤怒等）"}
+      ],
+      "bigworld_notes": "大世界NPC使用相同字段语义。heading_deg必须使用度数（与Quaternion.Euler匹配），禁止弧度混用（参见rules/auto-work-lesson-002.md）。"
+    },
+    {
+      "name": "TownNpcData（复用）",
+      "type": "embedded",
+      "description": "TownNpcComp的序列化结构，V1/V2共用。大世界NPC虽不在Town场景，但复用此组件作为网络同步载体。",
+      "fields": [
+        {"name": "npc_v2_info", "type": "NpcV2Info", "description": "V2管线状态"},
+        {"name": "combat_skill_id", "type": "int32", "description": "战斗技能ID（P0阶段不使用）"},
+        {"name": "schedule_state", "type": "int32", "description": "日程状态（巡逻/休息/聚集）"},
+        {"name": "avatar_part_list", "type": "repeated AvatarPart", "description": "外观部件列表"}
+      ],
+      "bigworld_notes": "大世界NPC P0阶段仅使用npc_v2_info和schedule_state字段，combat_skill_id留空。"
+    }
+  ],
+
+  "sync_mechanism": {
+    "server_to_client": {
+      "description": "服务端→客户端的状态同步机制",
+      "steps": [
+        "1. Handler更新NpcState对应字段（Movement/Expression/Emotion等）",
+        "2. syncNpcStateToAnimComp桥接NpcState→TownNpcComp的协议字段",
+        "3. SetSync()标记TownNpcComp脏（必须调用，否则帧同步不推送）",
+        "4. net_update/npc.go的getNpcMsg检测脏标记，调用ToProto()序列化",
+        "5. AOI广播NpcDataUpdate到范围内玩家",
+        "6. 客户端NetData.Listen<TownNpcData>触发DataSignal",
+        "7. 各Comp响应DataSignal更新表现（动画/移动/情绪）"
+      ]
+    },
+    "full_sync_triggers": [
+      "NPC首次进入玩家AOI（is_all=true）",
+      "玩家断线重连（对AOI内所有NPC全量推送）",
+      "GM命令强制刷新"
+    ],
+    "incremental_sync": "正常Tick中只推送脏标记变化的组件字段，带宽增量可控",
+    "batch_throttle": {
+      "_comment": "<!-- [迭代9修复] I4: 大量NPC同时状态变化时的带宽控制 -->",
+      "problem": "日程切换等事件导致大量NPC（如50个）同一帧全部SetSync()，单帧产生大量NpcDataUpdate消息",
+      "strategy": [
+        "服务端net_update层增加同步节流：每帧最多推送max_sync_per_frame=15个NPC的状态变化",
+        "超出的NPC延迟到下帧推送（脏标记保留，下帧net_update继续处理）",
+        "日程切换时Spawner分帧触发：每帧最多切换5个NPC的日程状态（与spawn_batch_size对称），避免50个NPC同帧全部变更",
+        "<!-- [迭代11修复] C1: 全量同步绕过节流 --> 断线重连全量同步（is_all=true）绕过max_sync_per_frame节流：net_update中检测到is_all标记时跳过帧同步计数器，一次性推送全量消息。原因：全量同步必须是单次原子消息，若被节流器截断会导致客户端pendingValidation超时误删正常NPC"
+      ],
+      "worst_case_estimate": "<!-- [迭代11修复] C1: 补充全量同步峰值评估 --> 断线重连全量同步（is_all=true，绕过节流）：50个NPC×约200字节≈10KB单帧burst，手游4G场景下可接受（4G上行峰值>1Mbps，10KB瞬时发送<100ms）。增量同步仍受节流限制，分帧推送：15+15+15+5，单帧峰值≤3KB",
+      "note": "增量同步（非全量）时单个NPC变更约40-80字节，15个NPC/帧≤1.2KB，在手游带宽预算内"
+    }
+  },
+
+  "critical_rules": [
+    "BehaviorState在sync层统一推导，不在Handler分散写入（feedback_behaviorstate_derive_in_sync）",
+    "RPC/GM修改NpcState后必须调SetSync()（feedback_setsync_after_npcstate）",
+    "heading使用度数（Deg后缀），禁止弧度混用（auto-work-lesson-002）",
+    "EntityId是ulong不是int（feedback_entityid_is_ulong）",
+    "不新增协议消息，禁止修改resources/proto（feedback_resources_proto_readonly）"
+  ]
+}

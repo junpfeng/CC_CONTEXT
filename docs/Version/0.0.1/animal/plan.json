@@ -1,0 +1,268 @@
+{
+  "name": "召唤宠物狗面板 技术规格",
+  "overview": "玩家通过 Alt+P 快捷键打开召唤面板，点击召唤按钮后服务器搜索附近最近的可用狗并设置跟随。复用已有 animal_follow 系统，新增 SummonDogReq/SummonDogRes 协议和客户端 SummonDogPanel UI。",
+  "complexity": "simple",
+  "sub_files": [],
+
+  "autonomous_decisions": [
+    {
+      "item": "搜索范围",
+      "decision": "50米（XZ平面距离平方=2500）",
+      "reason": "大世界地图大、狗密度低，50m 是合理默认值，服务端常量可后续调整"
+    },
+    {
+      "item": "同时召唤多条狗",
+      "decision": "仅一条，再次召唤切换为最近的狗",
+      "reason": "feature.json 明确要求"
+    },
+    {
+      "item": "多玩家争抢",
+      "decision": "已被其他玩家跟随的狗跳过，选下一条最近的",
+      "reason": "避免状态冲突，服务器权威裁决"
+    },
+    {
+      "item": "手机端入口",
+      "decision": "本期不做，仅 PC Alt+P",
+      "reason": "feature.json P1 优先级，后续通过功能菜单触发"
+    },
+    {
+      "item": "解除跟随",
+      "decision": "复用现有 30s 自动解除机制",
+      "reason": "animal_follow handler 已实现超时/距离过远自动解除"
+    },
+    {
+      "item": "旧狗解除跟随",
+      "decision": "召唤新狗时，服务端先清除旧狗的 FollowTargetID",
+      "reason": "feature.json 要求再次召唤时切换为最近的狗"
+    }
+  ],
+
+  "protocols": [
+    {
+      "name": "SummonDogReq",
+      "type": "req",
+      "description": "客户端请求召唤附近最近的狗。无参数，服务器根据玩家位置自动搜索。",
+      "fields": []
+    },
+    {
+      "name": "SummonDogRes",
+      "type": "res",
+      "description": "服务器返回召唤结果，包含错误码和被召唤狗的 EntityId。",
+      "fields": [
+        {"name": "code", "type": "uint32", "description": "结果码：0=成功，14005=附近无狗，14006=服务器异常"},
+        {"name": "animal_id", "type": "uint64", "description": "被召唤狗的 EntityId（成功时有效）"}
+      ]
+    }
+  ],
+
+  "flows": {
+    "main": [
+      {
+        "name": "召唤狗主流程",
+        "description": "玩家通过面板召唤附近最近的狗",
+        "steps": [
+          "步骤1: 玩家按 Alt+P → InputEventCenter 触发 → SummonDogPanel 打开（Toggle）",
+          "步骤2: 玩家点击「召唤」按钮 → 客户端检查 2s 冷却 → 按钮进入 Loading 状态 → 发送 SummonDogReq",
+          "步骤3: 服务端 NpcHandler.SummonDog 收到请求 → <!-- [迭代3修复] I1 --> 检查服务端 2s 冷却（复用 animal_feed cooldown 模式） → <!-- [迭代7修复] I2: 玩家特殊状态未校验 --> 检查玩家 BehaviorState 不为 Dead/InVehicle 等不可交互状态（参考 animal_feed handler 的前置检查），否则返回 Error14006 → 获取玩家 Transform",
+          "步骤4: 服务端遍历场景所有 NPC，筛选 ExtType=Animal && AnimalType=Dog && （FollowTargetID==0 或 FollowTargetID==当前玩家）<!-- [迭代3修复] I4: 包含自己已跟随的狗，支持短路判断 -->",
+          "步骤5: 计算 XZ 平面距离平方，排序取最近的，距离 ≤ 50m。<!-- [迭代3修复] I4 --> 若选中的狗 FollowTargetID 已等于当前玩家，直接返回 SummonDogRes{code=0, animal_id=该狗}，跳过步骤6-7",
+          "步骤6: 若玩家已有狗在跟随（遍历查找 FollowTargetID==playerEntityId 的狗），先清除旧狗的 FollowTargetID，设旧狗 BehaviorState=Idle，调 SetSync()",
+          "步骤7: 设置新狗 FollowTargetID=playerEntityId，BehaviorState=Follow，调 SetSync()",
+          "步骤8: 返回 SummonDogRes{code=0, animal_id=新狗EntityId}",
+          "步骤9: 客户端收到成功响应 → 关闭面板 → 显示短暂成功提示（2-3s 自动消失）",
+          "步骤10: 狗通过已有 animal_follow handler 自动向玩家移动并保持跟随"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "附近无狗",
+        "trigger": "50m 范围内无 AnimalType=Dog 的 NPC，或所有狗都在被其他玩家跟随",
+        "handling": "服务端返回 SummonDogRes{code=14005}，客户端面板保持打开，按钮下方显示「附近没有可召唤的狗」提示 2-3s"
+      },
+      {
+        "name": "玩家无 Transform",
+        "trigger": "玩家实体异常（极端情况）",
+        "handling": "服务端返回 SummonDogRes{code=14006}，客户端显示通用错误提示"
+      },
+      {
+        "name": "客户端冷却中",
+        "trigger": "距上次召唤不足 2 秒",
+        "handling": "客户端本地拦截，不发送请求，按钮保持灰色"
+      },
+      {
+        "name": "面板重复打开",
+        "trigger": "面板已打开时再次按 Alt+P",
+        "handling": "Toggle 关闭面板"
+      },
+      {
+        "name": "跟随中狗被销毁",
+        "trigger": "<!-- [迭代5修复] I2: 狗实体消失/被销毁场景未覆盖 --> 被跟随的狗在跟随过程中被服务端销毁（区域卸载、NPC 回收池回收等）",
+        "handling": "服务端：NPC 回收/销毁流程中，animal_follow handler 的 OnExit 会自动清除 FollowTargetID，无需额外处理。客户端：面板在召唤成功后已关闭，不持有 animal_id 的持续引用，狗实体销毁时由 EntityManager 正常移除表现层，不影响客户端状态。"
+      },
+      {
+        "name": "断线重连后跟随状态",
+        "trigger": "玩家召唤狗后断线重连",
+        "handling": "<!-- [迭代3修复] I3: 断线重连未覆盖 --> 跟随状态由服务端 animal_follow handler 维持（30s 超时）。30s 内重连，狗仍在跟随；超时则自动解除。客户端无需额外恢复逻辑，重连后面板为默认关闭状态，玩家可再次召唤（服务端会正确处理已有跟随的情况）。不需要展示当前跟随状态（YAGNI）。"
+      }
+    ]
+  },
+
+  "server_design": {
+    "data_models": [],
+    "actors": [
+      {
+        "name": "SceneServer - NpcHandler",
+        "responsibilities": [
+          "处理 SummonDogReq：搜索附近可用狗、清除旧跟随、设置新跟随",
+          "复用已有 animal_follow handler 维持跟随行为和 30s 超时解除"
+        ],
+        "handlers": ["SummonDogReq"]
+      }
+    ],
+    "error_codes": [
+      {
+        "code": "Error14005",
+        "description": "附近没有可召唤的狗",
+        "trigger": "50m 范围内无可用 Dog（不存在或全部已被跟随）"
+      },
+      {
+        "code": "Error14006",
+        "description": "召唤异常",
+        "trigger": "玩家实体异常、Transform 获取失败等服务器内部错误"
+      }
+    ],
+    "implementation_notes": [
+      "搜索范围常量：const summonDogMaxDistSq = float32(2500.0)（50m 平方）",
+      "距离计算：XZ 平面距离平方，复用 animal_feed.go 的模式",
+      "跟随设置：直接操作 NpcState.Animal.Perception.FollowTargetID 和 Base.BehaviorState",
+      "旧狗解除：遍历场景 NPC 查找 FollowTargetID==playerEntityId 的狗，清零并 SetSync",
+      "新文件：summon_dog.go 放在 net_func/npc/ 下，与 animal_feed.go 同级",
+      "参考 animal_feed.go 的 handler 签名和错误处理模式",
+      "<!-- [迭代3修复] I1: 服务端缺少请求频率限制 --><!-- [迭代5修复] I3: 冷却错误码未明确 --> 服务端冷却：复用 animal_feed.go 的 cooldown 模式（sync.Mutex + map[uint64]int64），在 handler 入口用 mtime.NowSecondTickWithOffset() 检查玩家上次召唤时间，冷却 2s（const summonDogCooldownSec = int64(2)），未过冷却返回 Error14006（召唤异常）。选择复用 14006 而非新增错误码的理由：正常流程中客户端有 2s 本地拦截，服务端冷却仅为防刷兜底，恶意客户端不在乎提示文案（YAGNI）",
+      "<!-- [迭代3修复] I2: 旧跟随狗查找优化 --> 旧狗解除优化：当前 NPC 数量较少（<500），全量遍历可接受。若后续 NPC 规模增长，可在 PlayerState 或 scene 级 map 中缓存 playerEntityId→followingDogEntityId 映射，召唤时 O(1) 定位旧狗",
+      "<!-- [迭代3修复] I4: 召唤同一条狗短路 --> 短路优化：步骤5 选中最近狗后，判断该狗的 FollowTargetID 是否已等于当前玩家 EntityId，若是则直接返回 SummonDogRes{code=0, animal_id=当前狗}，跳过清除和重设，避免不必要的状态翻转和两次 SetSync",
+      "<!-- [迭代3修复] I6: 并发安全说明 --> 并发安全：scene_server 的 net_func handler 在场景主循环中串行调用（单 goroutine），天然无并发竞态问题。两个玩家的 SummonDogReq 会顺序执行，不会同时操作同一条狗的 FollowTargetID",
+      "<!-- [迭代7修复] I2: 玩家特殊状态未校验 --> 玩家状态前置检查：在冷却检查后、获取 Transform 前，检查玩家 BehaviorState 不为 Dead/InVehicle 等不可交互状态，否则返回 Error14006。具体排除的状态列表参考 animal_feed handler 的前置检查逻辑",
+      "<!-- [迭代7修复] N2: 冷却 map 无清理机制 --> 冷却 map 清理：在玩家离线回调（OnPlayerOffline/OnPlayerLeave）中删除对应 playerEntityId 的 cooldown 条目，保持数据结构干净"
+    ]
+  },
+
+  "client_design": {
+    "managers": [],
+    "ui_panels": [
+      {
+        "name": "SummonDogPanel",
+        "description": "召唤宠物狗面板。简洁小窗口，包含标题、召唤按钮、关闭按钮、结果提示文本。参考 Test2Panel 的 PanelBase 模式实现。"
+      }
+    ],
+    "state_management": "无本地状态缓存。按钮冷却用客户端本地 Time.realtimeSinceStartup 计时，2s 内不可重复点击。",
+    "error_handling": "网络超时：按钮恢复可点击状态，显示「请求超时，请重试」。断线：面板自动关闭（随 UIManager 清理）。",
+    "implementation_notes": [
+      "<!-- [迭代7修复] I3: Alt+P 全局输入绑定注册位置不明确 --> 快捷键注册：在 InputEventId.cs 新增 SummonDogPanel 常量，在 InputEventCenter 中绑定 Alt+P → SendEvent。由 GameplayManager（或同级常驻 Manager）的 Init 中注册 Alt+P 事件监听，回调中调用 UIManager.Toggle<SummonDogPanel>()，注销在对应 Manager 的 Dispose 中。参考 OpenMap 快捷键的注册方式。面板自身不管理快捷键生命周期",
+      "面板目录：Assets/Scripts/Gameplay/Modules/RUI/Panels/SummonDogPanel/（SummonDogPanel.cs + SummonDogPanelView.cs）",
+      "面板生命周期：InitEx → BindUIEvents → OnShowEx（重置状态）→ OnCloseEx",
+      "<!-- [迭代3修复] I5: 明确协议处理模式 --><!-- [迭代5修复] I1: NetModule 描述与实际代码不符，改为 NetCmd async/await --><!-- [迭代7修复] I1: UniTask 未要求 CancellationToken --> 协议收发：在面板内直接处理，SummonDogPanel.cs 中通过 NetCmd.SummonDog(req) 发送请求，使用 async/await UniTask 模式获取 Result<SummonDogRes>（参考 AnimalInteractComp 的 NetCmd.AnimalFeed 调用方式），无需注册/注销回调，无需独立的 Net/Message/SummonDogRes.cs handler 文件。SummonDogPanel 持有 CancellationTokenSource，OnShowEx 中创建，OnCloseEx 中 Cancel+Dispose。NetCmd.SummonDog 调用传入 token，确保面板关闭后异步操作被取消，避免回调操作已销毁的 UI 组件。参考 AnimalInteractComp 的 CancellationToken 用法",
+      "UI 资源：需新建 Prefab，按钮 ≥ 44x44 逻辑像素"
+    ]
+  },
+
+  "testing": {
+    "server": [
+      "单元测试：SummonDog handler - 范围内有 1 条可用狗 → 返回成功 + 正确 entityId",
+      "单元测试：SummonDog handler - 范围内无狗 → 返回 14005",
+      "单元测试：SummonDog handler - 所有狗都被其他玩家跟随 → 返回 14005",
+      "单元测试：SummonDog handler - 已有旧狗跟随时召唤新狗 → 旧狗解除 + 新狗跟随",
+      "单元测试：SummonDog handler - 多条可用狗 → 选中距离最近的",
+      "单元测试：SummonDog handler - 2s 内重复召唤 → 返回冷却错误码 <!-- [迭代3修复] I1 -->",
+      "单元测试：SummonDog handler - 已跟随的狗是最近狗 → 直接返回成功，无状态翻转 <!-- [迭代3修复] I4 -->",
+      "<!-- [迭代7修复] I2 --> 单元测试：SummonDog handler - 玩家处于 Dead/InVehicle 状态时召唤 → 返回 Error14006",
+      "集成测试：召唤后狗实际跟随移动（animal_follow handler 正常工作）"
+    ],
+    "client": [
+      "Alt+P 快捷键打开/关闭面板 Toggle 正常",
+      "召唤成功 → 面板关闭 + 成功提示",
+      "召唤失败（无狗）→ 面板保持 + 失败提示",
+      "2s 冷却期间按钮灰色不可点击",
+      "面板在不同分辨率下布局正常，按钮 ≥ 44x44",
+      "通过 Unity MCP 运行时验证：登录→打开面板→点击召唤→确认狗跟随"
+    ]
+  },
+
+  "file_list": [
+    {
+      "path": "old_proto/scene/npc.proto",
+      "action": "modify",
+      "side": "proto",
+      "description": "新增 SummonDogReq 和 SummonDogRes 消息定义"
+    },
+    {
+      "path": "old_proto/scene/scene.proto",
+      "action": "modify",
+      "side": "proto",
+      "description": "注册 SummonDog RPC 路由"
+    },
+    {
+      "path": "P1GoServer/servers/scene_server/internal/net_func/npc/summon_dog.go",
+      "action": "create",
+      "side": "server",
+      "description": "SummonDog RPC handler：搜索附近狗、清除旧跟随、设置新跟随"
+    },
+    {
+      "path": "old_proto/base/codes.proto",
+      "action": "modify",
+      "side": "proto",
+      "description": "<!-- [迭代5修复] C1: codes_pb.go 是自动生成产物，禁止手动修改 --> 在 enum Codes 中新增 Error14005=14005（附近无狗）和 Error14006=14006（召唤异常）错误码定义"
+    },
+    {
+      "path": "P1GoServer/common/errorx/codes_pb.go",
+      "action": "generate",
+      "side": "server",
+      "description": "<!-- [迭代5修复] C1 --> 由 old_proto/_tool_new/1.generate.py 自动生成，包含新增的 Error14005/Error14006"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/RUI/Panels/SummonDogPanel/SummonDogPanel.cs",
+      "action": "create",
+      "side": "client",
+      "description": "召唤面板逻辑层：快捷键绑定、按钮事件、协议收发、冷却控制、结果展示"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Modules/RUI/Panels/SummonDogPanel/SummonDogPanelView.cs",
+      "action": "create",
+      "side": "client",
+      "description": "召唤面板 View 层：UI 组件绑定（按钮、文本、关闭按钮）"
+    },
+    {
+      "path": "freelifeclient/Assets/Scripts/Gameplay/Managers/Input/InputEventId.cs",
+      "action": "modify",
+      "side": "client",
+      "description": "新增 SummonDogPanel 快捷键事件 ID 常量"
+    },
+    {
+      "path": "freelifeclient/Assets/PackResources/UI/Prefab/SummonDogPanel.prefab",
+      "action": "create",
+      "side": "client",
+      "description": "召唤面板 UI Prefab（标题+召唤按钮+关闭按钮+提示文本）"
+    }
+  ],
+
+  "constitution_check": {
+    "server": [
+      "✅ 服务器权威：召唤逻辑完全由服务端裁决，客户端仅发请求和展示结果",
+      "✅ 错误显式处理：每个失败场景有明确错误码和日志",
+      "✅ XZ 平面距离平方：避免开方，符合性能要求",
+      "✅ 不修改生成代码：summon_dog.go 为新文件，proto 通过生成工具更新",
+      "✅ SetSync() 调用：修改 NpcState 后调用 SetSync() 确保帧同步推送",
+      "✅ YAGNI：仅实现召唤功能，无额外复杂设计",
+      "✅ 单一职责：summon_dog.go 只负责召唤逻辑"
+    ],
+    "client": [
+      "✅ 客户端不做距离判断：仅有 2s 冷却的本地频控，距离由服务端裁决",
+      "✅ 错误处理：MLog.Error?.Log 记录异常，UI 展示用户友好提示",
+      "✅ 手游适配：按钮 ≥ 44x44，多分辨率适配",
+      "✅ 不修改生成代码：Proto 生成代码由工具更新，手写代码在独立文件",
+      "✅ 命名规范：SummonDogReq/SummonDogRes 符合 *Req/*Res 命名约定",
+      "✅ 协议同步：修改 old_proto 后运行 1.generate.py 同时更新双端"
+    ]
+  }
+}

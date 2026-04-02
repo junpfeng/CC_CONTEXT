@@ -1,0 +1,120 @@
+{
+  "testing": {
+    "server": [],
+    "client": [
+      {
+        "req": "REQ-001",
+        "category": "外观系统",
+        "cases": [
+          "服务端下发 Gender=Female 的 NPC，通过 MCP 截图确认 Prefab 为 NewNpcPrefab_Female",
+          "服务端下发 Gender=Male 的 NPC，确认 Prefab 为 NewNpcPrefab",
+          "Gender 字段缺失/Unknown 时回退到男性 Prefab，不报 NullReference",
+          "切换场景后重新进入大世界，女性 NPC 仍正确显示女性体型（对象池复用路径验证）",
+          "TownNpcController 行为无任何变化（回归测试）"
+        ]
+      },
+      {
+        "req": "REQ-002",
+        "category": "FSM - TurnState",
+        "cases": [
+          "MCP 脚本手动设置 NPC 目标朝向差 40°，确认 FSM 进入 TurnState（通过反射读取当前状态名）<!-- [迭代3修复] I1: 阈值为30f，>30°即触发 -->",
+          "目标朝向差 20°，确认 FSM 不进入 TurnState <!-- [迭代3修复] I1: 原'30°不触发'与新阈值30f边界重合，改用20°明确在阈值以下 -->",
+          "进入 TurnState 后 2.1s，确认已强制退出（超时兜底）",
+          "TurnState 期间发送移动指令，确认不卡在转身（移动响应正常）",
+          "转身完成后确认返回到触发前的状态（Idle→TurnState→Idle，Move→TurnState→Move）",
+          "所有角度比较均使用度数（grep TurnThresholdDeg 确认无魔法数字）",
+          "200 NPC 场景下开启转身，Profiler 确认帧率下降 ≤ 2fps"
+        ]
+      },
+      {
+        "req": "REQ-003",
+        "category": "FSM - ScenarioState/ScheduleIdleState",
+        "cases": [
+          "GM 指令触发 NpcState=Scenario，MCP 截图确认场景点动画播放（Sit/Watch）",
+          "GM 指令触发 NpcState=ScheduleIdle，确认等待动画播放",
+          "状态退出时，通过 Profiler 动画层权重确认 CrossFade 淡出无残留（权重归零）",
+          "动画 Key 不存在时确认回退 Idle 且有 Warning 日志",
+          "Idle/Move/Run 状态行为在非 Scenario 时无变化（回归测试）"
+        ]
+      },
+      {
+        "req": "REQ-004",
+        "category": "动画层 - RightArm/AdditiveBodyExtra",
+        "cases": [
+          "<!-- [迭代3修复] C1: 不验证层数（原假设'7+2=9'错误，枚举已有9值），改为验证具体层的属性 --> MCP 反射读取 animancer.Layers[AnimancerLayers.RightArm(=1)] 存在且 Weight=0",
+          "MCP 反射读取 animancer.Layers[AnimancerLayers.AdditiveBodyExtra(=5)] IsAdditive=true 且 Weight=0",
+          "MCP 反射读取 animancer.Layers[AnimancerLayers.Face(=8)] Weight=1（始终激活）",
+          "调用 AnimationComp.Play(key, AnimancerLayers.RightArm) 不抛异常",
+          "RightArmAvatarMask 加载失败时层仍存在（无 Mask 运行），不抛异常"
+        ]
+      },
+      {
+        "req": "REQ-005",
+        "category": "动画层 - Face 层 + 面部动画",
+        "cases": [
+          "初始化后 Face 层绑定 FaceAvatarMask，Weight = 1",
+          "MCP 脚本调用 EmotionComp 触发 Angry 情绪，截图确认面部表情变化",
+          "触发 Happy/Sad 情绪，确认各 Clip 正确切换",
+          "情绪恢复 Neutral，确认回到 FaceIdle Clip",
+          "面部 Clip 资源缺失时静默跳过，身体动画不受影响",
+          "200 NPC 全开 Face 层（Weight=1），Profiler 动画 CPU 增量 < 0.2ms"
+        ]
+      },
+      {
+        "req": "REQ-006",
+        "category": "Timeline 支持",
+        "cases": [
+          "MCP 反射确认 _replaceTimelines 字段存在",
+          "调用 PlayTimeline(existingKey) 触发 Timeline 播放",
+          "调用 StopTimeline() 停止并恢复 Animancer 控制",
+          "PlayTimeline(nonExistingKey) 降级到 Transition 播放，不抛异常"
+        ]
+      },
+      {
+        "req": "REQ-007",
+        "category": "战斗/警惕状态动画",
+        "cases": [
+          "GM 指令触发 NpcState=Combat，截图确认动画与普通 Idle/Move 有视觉区分",
+          "GM 指令触发 NpcState=Scared，确认 AdditiveBody 层有叠加动画（Weight > 0）",
+          "GM 指令触发 NpcState=Flee，确认移动动画与普通 Move 有视觉区分",
+          "状态退出时 AdditiveBody 层 Weight 归零（无残留）",
+          "无对应动画配置时回退基础 Idle/Move，不报错"
+        ]
+      },
+      {
+        "req": "REQ-008",
+        "category": "击中反应动画",
+        "cases": [
+          "MCP 脚本调用 OnHit(HitData)，截图确认 UpperBody 层播放击中动画",
+          "约 1s 后确认 UpperBody 层恢复（_isInHitReaction = false）",
+          "死亡状态（NpcState.Death）下调用 OnHit，确认不触发击中动画",
+          "击中动画资源缺失时静默跳过，其他层动画不受影响"
+        ]
+      },
+      {
+        "req": "ALL",
+        "category": "性能验收",
+        "cases": [
+          "200 NPC 场景下（大世界满员），Profiler 录制 30s，动画 CPU 总增量 < 0.5ms/frame",
+          "新增层（RightArm/AdditiveBodyExtra）初始权重 0 时 CPU 增量几乎为 0",
+          "面部动画层（Weight=1）在 200 NPC 下 CPU 增量 < 0.2ms",
+          "内存：面部 Clip 预加载后内存增量 < 5MB（4个轻量 2D Clip）"
+        ]
+      },
+      {
+        "req": "ALL",
+        "category": "回归测试",
+        "cases": [
+          "TownNpcController/TownNpcFsmComp/TownNpcAnimationComp 无任何代码变动（grep 确认）",
+          "SakuraNpc 系统无变动",
+          "大世界现有 Idle/Move 状态行为与改动前一致"
+        ]
+      }
+    ],
+    "verification_method": {
+      "tools": ["Unity MCP (screenshot-game-view, script-execute, console-get-logs)", "Profiler", "GM命令"],
+      "self_test_required": true,
+      "note": "每个 REQ 实现后必须通过 MCP 自动验证，禁止仅靠代码审查认定完成（参考 CLAUDE.md 视觉改动验证规则）"
+    }
+  }
+}

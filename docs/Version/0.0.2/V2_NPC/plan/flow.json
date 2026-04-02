@@ -1,0 +1,197 @@
+{
+  "flows": {
+    "main": [
+      {
+        "name": "场景初始化流程",
+        "description": "大世界场景加载时初始化 NPC 完整子系统",
+        "steps": [
+          "1. scene_impl.go 通过 CitySceneInfo 检测场景类型为 BigWorld",
+          "2. MapRoadNetworkMgr.Init 加载 miami_ped_road.json，构建 roadsByType[footwalk] 索引",
+          "3. PatrolRouteManager.LoadFromDir(bin/config/ai_patrol/bigworld/) 加载所有巡逻路线",
+          "4. BigWorldNpcSpawner.loadWalkZoneConfig 加载 npc_zone_quota.json 配额配置",
+          "5. InitLocomotionManagers(patrolQuerier=PatrolRouteManager, roadNetQ=bigWorldRoadNetQ) 替换原 nil 参数",
+          "6. V2PipelineFactory 通过 init() 自动注册 BigWorld 4 维度 Pipeline（engagement/expression/locomotion/navigation）",
+          "6.5. <!-- [迭代7修复] C2: 补充 V2Brain 配置加载步骤，否则 AI 三维度不激活 --> V2BrainConfigLoader.LoadByPrefix('bigworld_', 'bin/config/ai_decision_v2/') → 加载 bigworld_locomotion.json / bigworld_engagement.json / bigworld_expression.json → 通过 PipelineType=BigWorld 关联到对应 Pipeline 各维度 Handler",
+          "7. BigWorldExtHandler 加载外观池 bigworld_npc_appearance.json + 日程模板 bigworld_schedule/",
+          "8. BigWorldNpcSpawner.initSpawnPoints 从 footwalk 路网提取候选生成点（替换原 GetAllPointPositions）",
+          "9. 初始化完成，Spawner 进入 TickSpawn 循环等待玩家进入"
+        ],
+        "error_handling": "行人路网加载失败 → Spawner.disabled=true，日志 log.Errorf，不影响交通车辆路网"
+      },
+      {
+        "name": "AOI 配额驱动生成流程",
+        "description": "每 5 秒计算 WalkZone 配额，驱动 NPC 动态生成",
+        "steps": [
+          "1. BigWorldNpcSpawner.TickQuota 每 quotaInterval=5s 执行一次",
+          "2. 遍历所有在线玩家，取 AOI 圆形范围（SpawnRadius=200m）",
+          "3. <!-- [迭代3修复] I2: 简化为 point-in-AABB 膨胀判断，无需精确面积 --> 对每个 WalkZone，判断是否有玩家 AOI 覆盖：玩家位置与 zone AABB 中心距离 < SpawnRadius + max(zone.width, zone.height)/2 → 该 zone 为 active",
+          "4. 被覆盖的 WalkZone 加入 activeZones 集合",
+          "5. 按 densityWeight 归一化分配 totalNpcBudget 到各 activeZone",
+          "6. 各 zone 配额 = min(normalizedBudget, maxNpc)",
+          "7. 当前 zone NPC 数 < 配额 → 标记需生成 deficit 个",
+          "8. 当前 zone NPC 数 > 配额 + recycleHysteresis → 标记可回收 surplus 个",
+          "9. 生成请求进入 TickSpawn 队列，每帧最多生成 SpawnBatchSize 个"
+        ],
+        "data_flow": "playerQuotas(map[accountId]int) → zoneQuotas(map[zoneId]int) → spawnQueue/recycleQueue"
+      },
+      {
+        "name": "NPC 创建流程",
+        "description": "单个 NPC 从生成到进入巡逻的完整流程",
+        "steps": [
+          "1. BigWorldNpcSpawner.spawnOne 从 PatrolRouteManager 选择负载最低的路线",
+          "2. 路线有效 → 从路线节点中选择最近的节点作为生成位置",
+          "3. <!-- [迭代3修复] I6: 动态ID用负数范围避免与配置表冲突 --> <!-- [迭代7修复] N2: 补充 overflow 无需防护说明 --> 分配动态 CfgId（nextCfgId--，从 -1 起递减：-1, -2, -3...）。负数 ID 与配置表正数 ID 天然隔离，无冲突风险。nextCfgId 为 int32（下界 -2147483648），按当前生成速率（~50 NPC/5s）计算约 6800 年不溢出，当前无需 wrap-around 保护",
+          "4. 创建 NPC 实体（ECS Entity + NpcComp + BigWorldSceneNpcExt）",
+          "5. BigWorldExtHandler.OnNpcCreated 被回调：",
+          "   5a. 从外观池随机选择外观（权重加权）→ 设置 AppearanceId + PartList",
+          "   5b. 选择日程模板 → 设置 ScheduleId",
+          "   5c. PatrolRouteManager.AssignNpc(routeId, cfgId) → 分配巡逻路线",
+          "6. NpcState 初始化：Movement.TargetPos = 路线当前节点位置",
+          "7. Pipeline.OnNpcAdded → 4 维度 Handler 初始化",
+          "8. locomotion/PatrolHandler 检测到 NPC 已分配路线 → 立即设置第一个目标节点",
+          "9. syncNpcMovement → NpcMoveComp 开始移动 → 推送 NpcV2Info 到客户端"
+        ]
+      },
+      {
+        "name": "NPC 巡逻移动流程",
+        "description": "Pipeline 驱动 NPC 沿 footwalk 路网循环巡逻",
+        "steps": [
+          "1. Pipeline.Tick 按维度优先级执行（engagement > expression > locomotion > navigation）",
+          "2. locomotion/PatrolHandler.OnTick：<!-- [迭代9修复] C1 --> 首先检查 NpcState.AssignedRouteId == 0（路线未分配）→ 若是，调用 PatrolRouteManager.AssignNpc(npcCfgId, patrolRouteIds) 尝试分配；成功则继续后续步骤；失败则直接 return（本 Tick 不设置 MoveTarget，等待下次 Tick 重试；重试是持续行为，每次 Tick 都会尝试）。路线已分配时：读取当前巡逻路线和目标节点",
+          "3. 检查是否到达当前节点（XZ 平方距离 < arrivalThreshold²）",
+          "4a. 未到达：保持当前 MoveTarget 不变",
+          "4b. 到达且 duration > 0：设置 MoveTarget=nil（停下），发送 NpcPatrolNodeArriveNtf",
+          "4c. 到达且 duration = 0：推进到下一节点，设置新 MoveTarget",
+          "5. duration 倒计时到期 → 推进到下一节点 → 设置新 MoveTarget",
+          "6. navigation 维度处理实际寻路：NpcState.MoveTarget → FindPathByType(footwalk) → 路径点序列",
+          "7. syncNpcMovement 桥接：NpcState.Movement → NpcMoveComp.SetPath(pathPoints)",
+          "8. NpcMoveComp 帧更新：沿路径点移动，速度 = goSpeed × patrolSpeedScale",
+          "9. 到达路线最后一个节点 → routeType=Permanent → 循环回第一个节点"
+        ],
+        "performance": "FindPathByType 仅搜索 footwalk 子路网，路点数约为总量的 30%，50 NPC 并行寻路 < 1ms"
+      },
+      {
+        "name": "NPC 回收流程",
+        "description": "AOI 超出范围或配额超额的 NPC 延迟回收",
+        "steps": [
+          "1. TickQuota 标记可回收 NPC（zone 超额 + recycleHysteresis）",
+          "2. 或：NPC 位置与所有玩家距离 > DespawnRadius",
+          "3. NPC 加入 pendingDespawn 表，记录时间戳",
+          "4. DespawnDelay 到期（默认 30s）且仍满足回收条件 → 执行回收",
+          "5. BigWorldExtHandler.OnNpcDestroyed 回调：",
+          "   5a. PatrolRouteManager.ReleaseNpc(routeId, cfgId) → 释放路线占用",
+          "   5b. scenarioNpcCleaner（如有场景点占用）→ 释放",
+          "   5c. patrolNpcCleaner → 释放巡逻节点占用",
+          "6. 销毁 NPC 实体 → ECS 回收组件",
+          "7. <!-- [迭代9修复] I3 --> 复用现有 EntityRemoveNtf（NetEntity 框架统一删除消息）推送客户端 → DataManager 收到后移除对应 NpcData，触发 Npcs.OnRemoved 事件 → BigWorldNpcManager 订阅 DataManager.Npcs.OnRemoved 事件（而非直接监听 EntityRemoveNtf 消息），响应 OnNpcRemoved → 触发 Controller.OnClear",
+          "8. 客户端 BigWorldNpcController.OnClear → 停止动画、释放引用、回收到对象池"
+        ]
+      },
+      {
+        "name": "GM 手动生成流程",
+        "description": "通过 GM 命令在玩家附近手动生成指定 NPC",
+        "steps": [
+          "1. 玩家输入 /ke* gm bw_npc spawn {cfgId}",
+          "2. GM 处理器解析命令 → 调用 BigWorldNpcSpawner.GMSpawnAt(cfgId, playerPos)",
+          "3. cfgId 校验：查询 NPC 配置表，无效返回错误提示",
+          "4. 在玩家位置附近查找最近的 footwalk 路点 → FindNearestPointIDByType",
+          "5. 在路点位置生成 NPC（走标准创建流程）",
+          "6. 生成的 NPC 纳入 AOI 管理，超出范围正常回收",
+          "7. 返回成功提示：生成 NPC cfgId=xxx at (x, y, z)"
+        ]
+      },
+      {
+        "name": "客户端 NPC 表现流程",
+        "description": "客户端接收数据并驱动 NPC 视觉表现",
+        "steps": [
+          "1. 收到 NpcV2Info → DataManager.Npcs 新增 NpcData",
+          "2. BigWorldNpcManager 响应 → 从对象池获取 BigWorldNpcController",
+          "3. Controller.OnInit 按顺序注册组件：TransformComp → MoveComp → AppearanceComp → AnimationComp → FsmComp → EmotionComp",
+          "4. AppearanceComp 异步加载外观资源（YooAsset）",
+          "5. 持续收到 MonsterTransformUpdate → BigWorldNpcMoveComp.OnDataChanged",
+          "6. TransformSnapshotQueue 缓冲位置快照，Update 中插值平滑",
+          "7. MoveComp.CurrentSpeed 驱动 AnimationComp 切换 Idle/Walk/Run",
+          "8. 收到 NpcPatrolNodeArriveNtf → NpcPatrolNodeArriveNtf.cs 先 TryQuery TownNpcManager，miss 后 fallback BigWorldNpcManager.TryQuery → 命中后调用 FsmComp.OnPatrolNodeArrive → 切换到 PatrolBehavior 状态 → 播放行为动画 <!-- [迭代3修复] C1: 补充消息路由 fallback 逻辑 -->",
+          "9. duration 到期 → FsmComp 恢复 Move 状态",
+          "10. NPC 被回收 → Controller.OnClear → 所有 Comp 清理 → 回收到对象池"
+        ]
+      },
+      {
+        "name": "小地图 NPC 图例流程",
+        "description": "大世界小地图显示/隐藏 NPC 位置标记",
+        "steps": [
+          "1. MapPanel 初始化时检测场景类型，大世界场景显示 NPC 图例按钮（LegendType=14）",
+          "2. 按钮默认隐藏状态（Toggle off）",
+          "3. 玩家点击 → MapLegendControl.ToggleShowAllBigWorldNpc()",
+          "4. Toggle on → 遍历 DataManager.Npcs 中所有大世界 NPC → 创建 MapBigWorldNpcLegend → 添加到地图",
+          "5. NPC 生成事件 → 若 Toggle on → 自动添加图例",
+          "6. NPC 回收事件 → 自动移除对应图例",
+          "7. Toggle off → 清除所有 NPC 图例",
+          "8. 非大世界场景 → 按钮不显示"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "footwalk 路网不可达",
+        "trigger": "FindPathByType(footwalk) 返回空路径（路网断裂或跨分区）",
+        "handling": "降级策略：1) 尝试 NavMesh 寻路 → 2) 再失败直线移动 → 3) 日志 log.Warnf 记录起止点 ID → 不崩溃不阻塞",
+        "client_impact": "NPC 可能短暂穿模，但不会停滞"
+      },
+      {
+        "name": "巡逻路线全部满员",
+        "trigger": "PatrolRouteManager 所有路线 NPC 数 >= desiredNpcCount",
+        "handling": "BigWorldNpcSpawner 暂停生成，TickSpawn 返回 0。等待有 NPC 被回收释放路线空位后自动恢复",
+        "_comment_i5_fix": "<!-- [迭代7修复] I5: 明确回收后的 5s 空档期是预期防抖行为，避免开发者误认为 bug -->",
+        "post_release_gap": "NPC 被回收后 PatrolRoute.ReleaseNpc 立即释放路线空位，但下次生成触发需等待最多 5 秒（quotaInterval 重算）。此 5s 空档期是预期防抖行为，不应添加即时触发逻辑（会破坏防抖机制）。",
+        "client_impact": "无影响，只是 NPC 数量不增加"
+      },
+      {
+        "name": "AOI 边界配额抖动",
+        "trigger": "玩家在 WalkZone AABB 边界反复进出，导致配额频繁变化",
+        "handling": "recycleHysteresis 阈值（默认 5）：NPC 数必须超出配额+5 才触发回收，消除低频抖动",
+        "client_impact": "NPC 数量在配额附近平稳波动，无闪烁"
+      },
+      {
+        "name": "行人路网文件缺失",
+        "trigger": "miami_ped_road.json 未生成或路径配置错误",
+        "handling": "BigWorldNpcSpawner.disabled = true，日志 log.Errorf 报告路网缺失。NPC 系统静默降级，不影响其他功能",
+        "client_impact": "大世界无 NPC，但不崩溃"
+      },
+      {
+        "name": "客户端对象池耗尽",
+        "trigger": "同时可见 NPC 数 > 对象池大小（20）",
+        "_comment_i7": "<!-- [迭代3修复] I7: 补充队列上限和丢弃策略 -->",
+        "handling": "新 NPC 入队等待池中对象回收，排队队列上限 10。超出上限时丢弃距玩家最远的 NPC 请求（不渲染）。LOD 系统在 Minimal 距离外加速回收，保证近处 NPC 优先显示",
+        "client_impact": "远处 NPC 可能短暂不可见，极端情况（40+ NPC 密集区）最远的 NPC 不渲染"
+      },
+      {
+        "name": "断线重连",
+        "trigger": "客户端断线后重新连接",
+        "handling": "服务端全量推送当前 AOI 内所有 NPC 的 NpcV2Info + 最新 MonsterTransformUpdate。客户端 BigWorldNpcManager 清空后重建所有 Controller",
+        "client_impact": "短暂闪烁后恢复正常"
+      },
+      {
+        "_comment": "<!-- [迭代3修复] 遗漏场景1: 多玩家 AOI 重叠配额 -->",
+        "name": "多玩家 AOI 重叠",
+        "trigger": "两个或更多玩家同时覆盖同一个 WalkZone",
+        "handling": "配额不翻倍。TickQuota 收集所有玩家 AOI 后对 activeZones 取并集（set），每个 zone 只算一次覆盖。配额仅由 densityWeight 和 totalNpcBudget 决定，与覆盖玩家数无关",
+        "client_impact": "无影响"
+      },
+      {
+        "_comment": "<!-- [迭代3修复] 遗漏场景2: 场景切换 NPC 清理 -->",
+        "name": "场景切换 NPC 清理",
+        "trigger": "玩家从大世界切换到小镇（或其他场景）",
+        "handling": "BigWorldNpcManager.OnSceneUnload → 遍历所有 Controller 调用 OnClear → 清空对象池 → 取消所有事件订阅。服务端侧 NPC 实体随场景销毁自动清理",
+        "client_impact": "场景切换时 NPC 全部清理，无残留"
+      },
+      {
+        "_comment": "<!-- [迭代3修复] 遗漏场景3: patrolRouteIds 为空 -->",
+        "name": "NPC 无可用巡逻路线",
+        "trigger": "NPC 配置表 patrolRouteIds 为空或所有指定路线满员",
+        "handling": "<!-- [迭代9修复] C1 --> BigWorldExtHandler.OnNpcCreated 未能分配路线 → NPC 保持 Idle 状态（locomotion 维度 PatrolHandler 检测无路线时不设置 MoveTarget）→ 重试发生在 PatrolHandler.OnTick 每次调用时（持续行为，非一次性）：检测 NpcState.AssignedRouteId == 0 → 调用 PatrolRouteManager.AssignNpc(npcCfgId, patrolRouteIds) → 成功则设置 MoveTarget 进入巡逻；失败则 return 等待下轮 Tick",
+        "client_impact": "NPC 原地站立播放 Idle 动画，后续获得路线后自动开始移动"
+      }
+    ]
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "title": "大世界V2 NPC系统 - 流程设计详情",
+
+  "flows": {
+    "main": [
+      {
+        "name": "NPC生成流程",
+        "description": "玩家进入大世界后，AOI系统驱动NPC动态生成",
+        "steps": [
+          "1. 玩家进入大世界场景（SceneType=BigWorld）",
+          "2. <!-- [迭代9修复] 遗漏场景2: Spawner初始化时序 --> BigWorldNpcSpawner在场景初始化时启动（加载路网数据→校验完整性→预计算spawnPoints）。如果玩家进入大世界时Spawner尚未完成初始化（路网加载中），TickSpawn检测到initialized=false时跳过，玩家AOI事件排入pendingQueue，初始化完成后立即处理pendingQueue中的待生成请求",
+          "3. Spawner计算spawn_radius内应生成的NPC数量（基于density配置）",
+          "4. 分帧创建NPC（每帧最多spawn_batch_size个，防止帧率突刺）",
+          "5. 每个NPC创建流程：state.Acquire()获取池化NpcState → 加载V2_BigWorld日程配置 → cnpc.NewSceneNpcComp()创建ECS组件 → 附加TownNpcComp（网络同步用）",
+          "6. BigWorldExtHandler.OnNpcCreated被回调：注入感知插件（StateSensor/EventSensor/DistanceSensor）、设置初始日程、随机分配外观",
+          "7. OrthogonalPipeline.AddEntity(npcEntity)注册到V2管线",
+          "8. AOI系统将NPC实体加入广播范围",
+          "9. NpcDataUpdate(is_all=true)全量同步到AOI内所有玩家",
+          "10. 客户端BigWorldNpcManager.OnEntityCreate → 对象池获取/创建BigWorldNpcController → OnInit注册所有Comp → 根据全量数据初始化状态"
+        ]
+      },
+      {
+        "name": "NPC行为Tick循环",
+        "description": "服务端每帧驱动NPC行为决策和执行",
+        "steps": [
+          "1. BigWorldNpcUpdateSystem.Tick()被SceneServer主循环调用",
+          "2. 遍历所有BigWorld NPC，根据AI LOD分级决定是否本帧Tick（近距：每帧，中距：每3帧，远距：每10帧）",
+          "3. SensorSystem.TickSensor()：调用sensorRegistry.SenseAll(ctx, BigWorld)，各感知插件采集环境信息写入NpcState.Perception",
+          "4. V2Brain读取NpcState，按维度独立决策产出Plan名称",
+          "5. OrthogonalPipeline.Tick()按配置顺序执行各维度Handler：",
+          "   5a. engagement Handler：检查威胁感知，P0仅实现idle（无战斗）",
+          "   5b. expression Handler：根据emotion和perception决定反应动画",
+          "   5c. locomotion Handler：根据日程和移动目标决定移动模式（Walk/Run/Idle）",
+          "   5d. navigation Handler：执行A*寻路，更新NpcState.Movement（目标点、路径、速度）",
+          "5e. <!-- [迭代3修复] C1: 载具避让检测 --> navigation Handler执行移动前，检测前方5m是否有载具实体，有则暂停等待；路口处检查TrafficLightManager信号灯状态，红灯等待",
+          "6. syncNpcMovement桥接：NpcState.Movement → NpcMoveComp → 执行实际移动 → Y坐标Raycast修正",
+          "7. syncNpcStateToAnimComp桥接：NpcState → TownNpcComp协议字段 → SetSync()标脏",
+          "8. net_update检测脏标记，序列化增量数据通过NpcDataUpdate广播"
+        ]
+      },
+      {
+        "name": "客户端NPC表现更新",
+        "description": "客户端收到服务端同步数据后的表现流程",
+        "steps": [
+          "1. NetData.Listen<TownNpcData>触发DataSignal回调",
+          "2. BigWorldNpcTransformComp：收到位置数据 → 加入TransformSnapshotQueue → 插值平滑移动",
+          "3. BigWorldNpcFsmComp：收到AnimState变化 → FSM状态切换（Idle/Move/Turn）",
+          "4. BigWorldNpcAnimationComp：FSM状态驱动 → Animancer播放对应动画clip → 速度归一化匹配移速",
+          "5. BigWorldNpcEmotionComp（P1）：收到Emotion变化 → 切换表情动画",
+          "6. HiZCulling检测：NPC超出视距时暂停Animancer图和Transform更新，回到视距内恢复"
+        ]
+      },
+      {
+        "name": "NPC回收流程",
+        "description": "NPC离开玩家AOI或Spawner决定回收",
+        "steps": [
+          "1. BigWorldNpcSpawner每帧检查NPC与所有在线玩家的XZ平方距离",
+          "1a. <!-- [迭代3修复] I1: NPC生命周期由任意玩家维持 --> 取所有在线玩家中距离NPC最近的距离值作为判定依据，而非绑定到NPC创建者",
+          "2. NPC与最近玩家的距离超过despawn_radius且持续N秒（防止边界抖动）",
+          "3. SceneNpcMgr.DestroyNpc(npcEntity)被调用",
+          "4. OrthogonalPipeline.RemoveEntity(npcEntity)从管线移除",
+          "5. BigWorldExtHandler.OnNpcDestroyed回调：清理感知插件注册",
+          "6. state.Release(npcState)归还对象池",
+          "7. AOI系统发送实体销毁通知到客户端",
+          "8. 客户端BigWorldNpcManager.OnEntityDestroy → Controller.OnClear()清理所有Comp → 回收到对象池（不Destroy）"
+        ]
+      },
+      {
+        "name": "日程切换流程",
+        "description": "<!-- [迭代9修复] I5: 补充游戏内时间与日程的关联 --> 游戏内时间变化触发NPC日程切换。P0阶段大世界使用与小镇相同的游戏内时间系统（GameTimeManager），时间流速由服务端控制（默认1分钟真实时间=1小时游戏时间），支持日夜循环。如果P0暂不启用日夜循环，则ScheduleSensor始终返回'白天'时段，所有NPC使用白天日程（巡逻为主），日程切换退化为仅通过行为完成触发（巡逻到达→切休息→休息超时→切巡逻）",
+        "steps": [
+          "1. ScheduleSensor感知当前游戏内时间（通过GameTimeManager.GetCurrentGameTime()获取）",
+          "2. 对比NpcState.ScheduleState中当前日程条目的时间段",
+          "3. 时间超出当前日程范围 → 查找V2_BigWorld日程配置中下一个匹配条目",
+          "4. <!-- [迭代3修复] I4: 明确ScheduleState更新时机和'当前路段'定义 --> ScheduleState立即更新为新日程（新日程ID、目标区域、行为类型），供V2Brain下一次决策使用",
+          "5. V2Brain在下一个Tick中读取新的ScheduleState，相关维度产出新Plan",
+          "6. locomotion/navigation Handler根据新日程选择新的移动目标和模式",
+          "7. <!-- [迭代3修复] I4 --> '当前路段'定义为'到达当前A*路径的终点'（即NavigationHandler中已计算路径的最后一个路点）。日程切换时NavigationHandler继续执行当前路径直到到达终点，到达后重新请求V2Brain决策（此时读取到已更新的ScheduleState），防止瞬移"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "NPC生成超上限",
+        "trigger": "BigWorldNpcSpawner发现当前NPC数量 >= max_count(50)",
+        "handling": "跳过本次生成。Spawner维护优先级队列，下次Tick时先回收最远NPC再生成新NPC。日志记录跳过原因（log.Warnf）。"
+      },
+      {
+        "name": "A*寻路失败",
+        "trigger": "navigation Handler调用A*寻路返回nil路径（路网不连通/超时/节点屏蔽）",
+        "handling": "NPC回退到Idle状态（locomotion Handler设置Idle模式）。记录log.Errorf含NPC位置和目标位置。等待下次日程切换或Sensor触发重新选择目标点。不重试同一目标（防死循环）。"
+      },
+      {
+        "name": "Y坐标修正失败",
+        "trigger": "Grounds层Raycast未命中（NPC位于海面上方或地图边界外）",
+        "handling": "检查Y是否<50（海洋水面），是则标记NPC为InWater状态。地图边界外则回收NPC。记录log.Warnf。"
+      },
+      {
+        "name": "客户端对象池耗尽",
+        "trigger": "BigWorldNpcManager对象池为空且同屏NPC达上限(20)",
+        "handling": "LOD系统强制降级最远的NPC（暂停所有更新但保留实体），释放渲染资源。新NPC创建排队等待。MLog.Warn记录。"
+      },
+      {
+        "name": "断线重连",
+        "trigger": "客户端WebSocket断线后重新建立连接",
+        "handling": "服务端检测重连 → 对AOI内所有NPC发送NpcDataUpdate(is_all=true)全量推送。<!-- [迭代3修复] I6: 无闪烁重连 --> 客户端标记所有现有NPC为pendingValidation，收到全量推送后逐个对比entityId：已存在的更新状态，不存在的销毁，新增的创建，最后清理剩余pendingValidation的NPC。避免清空→重建导致的集体闪烁。"
+      },
+      {
+        "name": "Pipeline Tick超时",
+        "trigger": "单帧Pipeline Tick耗时超过2ms预算",
+        "handling": "AI LOD自动降级：将更多NPC降为低频Tick。如果持续超时，Spawner减少max_count上限。记录log.Warnf用于性能调优。"
+      },
+      {
+        "name": "Spawner边界抖动",
+        "trigger": "NPC在spawn_radius/despawn_radius边界反复进出",
+        "handling": "despawn_radius设置为spawn_radius的1.5倍（滞后带），且NPC必须在despawn_radius外持续3秒才回收。防止频繁创建/销毁。"
+      }
+    ]
+  }
+}

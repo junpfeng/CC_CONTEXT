@@ -1,0 +1,73 @@
+{
+  "name": "召唤轮盘 (Summon Wheel)",
+  "overview": "新建独立的 SummonWheelPanel，圆形扇区布局，初始2个功能槽位（召唤狗/叫车），快捷键O打开，架构支持后续扩展",
+  "classification": "direct",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "SummonWheelPanel 面板创建",
+      "description": "新建 SummonWheelPanel + SummonWheelView，圆形扇区布局，槽位数据驱动。UXML 布局 Mobile+PC 各一份。PanelEnum 注册 + UIConfig.json 配置",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "SummonWheelPanel.cs 和 SummonWheelView.cs 存在且编译通过",
+        "PanelEnum 包含 SummonWheel 枚举值",
+        "UIConfig.json 包含 SummonWheel 配置",
+        "UXML 文件存在于 Group_Mobile 和 Group_PC"
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "title": "快捷键O打开轮盘",
+      "description": "在 PlayerControls.inputactions 注册 OpenSummonWheel action 绑定键盘O，UIOperationCallback 中添加回调打开面板",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "按键O触发打开 SummonWheelPanel",
+        "再次按O或点击关闭按钮可关闭轮盘"
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "title": "召唤狗扇区功能",
+      "description": "点击召唤狗扇区，复用 NetCmd.SummonDog 逻辑，2s本地冷却，成功后关闭轮盘并 ShowCommonTips",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "点击召唤狗扇区发送 SummonDogReq",
+        "2秒冷却期内再次点击无效",
+        "成功后关闭轮盘并显示提示"
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "title": "叫车扇区功能",
+      "description": "点击叫车扇区，关闭召唤轮盘，打开 PhoneMyCarPanel",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "点击叫车扇区关闭召唤轮盘",
+        "PhoneMyCarPanel 被打开"
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "title": "扇区交互反馈",
+      "description": "鼠标移到扇区有高亮反馈，角度选择算法动态分配（360°/N）",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "鼠标移到扇区时扇区高亮",
+        "鼠标移出扇区时恢复正常"
+      ]
+    }
+  ],
+  "technical_constraints": [
+    {"category": "架构", "description": "遵循 Panel→View→Widget 架构，参考 PoseWheelPanel"},
+    {"category": "架构", "description": "槽位数据驱动，非硬编码，支持后续扩展"},
+    {"category": "性能", "description": "手机端性能预算，避免不必要的 GC 分配"}
+  ],
+  "projects": ["freelifeclient"],
+  "dependencies": ["NetCmd.SummonDog (scene.pb.cs)", "PhoneMyCarPanel (已存在)", "InputSystem PlayerControls"],
+  "risks": ["PanelEnum 自动生成机制需正确处理", "InputActions 文件格式复杂需谨慎编辑"]
+}

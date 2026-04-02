@@ -1,0 +1,106 @@
+{
+  "client_design": {
+    "managers": [
+      {
+        "name": "BigWorldNpcManager",
+        "base_type": "已有，修改",
+        "responsibilities": [
+          "P1：AOI距离分档（Near<30m/Mid<60m/Far>=60m）",
+          "P1：距离变化时调用controller.LodComp.SetLod(level)",
+          "P1：LOD=Far时每5帧更新一次（已有基础，完善）"
+        ]
+      },
+      {
+        "name": "BigWorldNpcLodComp（新建）",
+        "base_type": "BaseComp",
+        "responsibilities": [
+          "维护当前LodLevel(0=Near/1=Mid/2=Far)",
+          "SetLod()：通知AnimationComp调整Animancer精度（Far时禁用混合）",
+          "SetLod()：通知MoveComp调整插值（Far时跳过插值）",
+          "SetLod()变化时log：'LOD changed: ' + oldLevel + ' -> ' + newLevel"
+        ]
+      }
+    ],
+    "ui_panels": [],
+    "state_management": "所有NPC状态为运行时内存，随Controller对象池回收清理。EmotionComp在OnClear时Cancel所有UniTask。LOD等级随玩家距离实时更新（Manager每帧检测）。",
+    "error_handling": "emotionState枚举越界时日志Warning+忽略；FSM切换失败（目标State未注册）时保持当前State；LOD快速切换时ForceIdle防止TurnState残留冲突。",
+    "components_detail": {
+      "BigWorldNpcFsmComp_modifications": {
+        "p0_new_states": [
+          "BigWorldNpcFleeState — 注册到FSM，映射NpcState.Flee（value=2）",
+          "BigWorldNpcNervousState — 注册到FSM，映射NpcState.Nervous（value=3）",
+          "BigWorldNpcCuriousState — 注册到FSM，映射NpcState.Curious（value=4）"
+        ],
+        "p1_new_states": [
+          "BigWorldNpcAngryState — 注册到FSM，映射NpcState.Angry（value=5）"
+        ],
+        "run_state_scope_note": "[迭代3修复 遗漏1] feature.json goals中提到'增加Run状态'。确认：普通RunState（日程快速移动）延后到P2阶段实现。P0/P1阶段仅FleeState包含跑步动画（逃跑专用）。日程移动统一使用MoveState（Walk速度）。若需要日程期间的快速移动，P2阶段新增NpcState.Run(value=9)+BigWorldNpcRunState，届时重新评估。",
+        "serverStateMap_additions": {
+          "NpcState.Flee": "BigWorldNpcFleeState",
+          "NpcState.Nervous": "BigWorldNpcNervousState",
+          "NpcState.Curious": "BigWorldNpcCuriousState",
+          "NpcState.Angry": "BigWorldNpcAngryState（P1）"
+        },
+        "note": "注册方式参考现有IdleState/MoveState/TurnState的注册模式（阅读FsmComp.OnInit后确定）"
+      },
+      "BigWorldNpcEmotionComp_modifications": {
+        "p0_changes": [
+          "HandleEmotionState(int emotionState)：接收服务端推送",
+          "emotionState != 0 时 → 调用FsmComp切换到对应情绪State",
+          "emotionState == 0 时 → FsmComp回到Idle/Move（取决于当前移动状态）",
+          "调用AnimationComp.SetEmotionAnim(emotionState)驱动Face层表情"
+        ],
+        "cleanup": "OnClear()调用_cts.Cancel()（CancellationTokenSource）"
+      },
+      "BigWorldNpcAnimationComp_modifications": {
+        "p0_face_layer": [
+          "确认Face层（index=3或对应值）已初始化，绑定FaceAvatarMask",
+          "SetEmotionAnim(emotionState)：Face层CrossFade到对应Clip（Scared/Nervous/Curious/Angry）",
+          "emotionState=0时Face层回到Idle Clip"
+        ],
+        "p1_lod_support": [
+          "SetLodLevel(int level)：level=2(Far)时禁用Animancer混合权重调整（直接SetState而非CrossFade）",
+          "level回到0/1时恢复CrossFade"
+        ],
+        "layer_priority": "Face层和AdditiveBody层并发时：情绪>击中反应（参考lesson-007 Animancer共享层优先级保护）"
+      },
+      "new_states": {
+        "BigWorldNpcFleeState": {
+          "entry": "播放Run动画（通过AnimationComp.PlayRunAnim()），RunSpeed加速系数×1.5",
+          "update": "每帧检查：服务端不再推送Flee时→退出到MoveState",
+          "exit": "Stop Base层Flee动画；RunSpeed恢复正常",
+          "rule": "OnExit必须Stop所有层，angle变量用Deg后缀"
+        },
+        "BigWorldNpcNervousState": {
+          "entry": "WalkSpeed降低（×0.7慢步），通知AnimationComp叠加紧张动画（AdditiveBody层）",
+          "exit": "Stop AdditiveBody层紧张动画"
+        },
+        "BigWorldNpcCuriousState": {
+          "entry": "停步（速度=0），播放Idle+Face层好奇表情",
+          "exit": "Face层清除好奇表情"
+        },
+        "BigWorldNpcAngryState": {
+          "entry": "P1：播放愤怒肢体动画+Face层愤怒表情",
+          "exit": "清除两层动画"
+        }
+      }
+    },
+    "lod_system": {
+      "levels": {
+        "Near_LOD0": {"distance_sq": "<900", "tick": "每帧", "animation": "完整Animancer混合", "emotion": "完整情绪系统"},
+        "Mid_LOD1": {"distance_sq": "900-3600", "tick": "每3帧", "animation": "简化混合（直接SetState）", "emotion": "状态保持，不触发新情绪"},
+        "Far_LOD2": {"distance_sq": ">3600", "tick": "每6帧", "animation": "禁用混合，仅Idle姿态", "emotion": "禁用"}
+      },
+      "transition": "LOD变化时强制FSM到Idle再切换，防止残留状态"
+    },
+    "coding_rules_checklist": [
+      "MLog日志：+拼接，禁止$\"\"插值（lesson-003）",
+      "async UniTaskVoid：带CancellationToken参数，OnClear中_cts.Cancel()",
+      "FSM OnExit：Stop所有使用过的AnimancerLayer",
+      "Override OnRemove：末尾调用base.OnRemove()",
+      "角度变量：headingDeg/deltaAngleDeg（lesson-002）",
+      "新Comp：Controller.OnInit中AddComp（feedback_client_comp_registration）",
+      "Animancer共享层并发：检查_hasHighPriorityOverride（lesson-007）"
+    ]
+  }
+}

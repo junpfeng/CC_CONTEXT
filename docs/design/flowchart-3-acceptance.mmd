@@ -1,0 +1,54 @@
+flowchart TD
+    FROM_S4(["从 Step 4 DDRP 循环 break"])
+
+    subgraph S5["Step 5  验收确认"]
+
+        READ["5.0 读取 engine-result.md<br/>获取引擎类型 + 编译/运行时状态"]
+        EXTRACT["5.1 提取验收清单<br/>AC-01, AC-02, ... AC-N"]
+        CLASSIFY["5.2 分类验证方法<br/>编译 / 代码存在性 / 运行时<br/>数据 / 协议一致性 / 单元测试"]
+        EXEC["5.3 逐条执行验证<br/>记录 PASS 或 FAIL + 证据"]
+        ALL_PASS{"全部 PASS?"}
+
+        subgraph FIX["5.4 失败修复"]
+            GRADE{"FAIL 分级"}
+
+            subgraph TRIVIAL_BOX["TRIVIAL 内联修复"]
+                TRIVIAL["主进程直接修<br/>≤200 行读取<br/>≤3 个文件修改"]
+                T_OK{"修复后<br/>PASS?"}
+            end
+
+            subgraph COMPLEX_BOX["COMPLEX 隔离修复"]
+                BUG_REP["bug:report 登记<br/>写入 docs/bugs/"]
+                SPAWN_DD["spawn dev-debug<br/>独立进程修复"]
+                DD_DONE["dev-debug 完成<br/>读 acceptance-bug-map.md"]
+            end
+
+            REVERIFY["5.4.3 重新验证<br/>FIXED 条目"]
+            ROUND{"acceptance_round<br/>< 5 ?"}
+        end
+
+        REPORT["5.5 输出验收报告<br/>acceptance-report.md"]
+    end
+
+    DONE(["交付完成"])
+
+    FROM_S4 --> READ --> EXTRACT --> CLASSIFY --> EXEC --> ALL_PASS
+    ALL_PASS -->|"全部 PASS"| REPORT
+    ALL_PASS -->|"有 FAIL"| GRADE
+    GRADE -->|"TRIVIAL"| TRIVIAL --> T_OK
+    T_OK -->|"PASS"| ALL_PASS
+    T_OK -->|"仍 FAIL → 升级"| BUG_REP
+    GRADE -->|"COMPLEX"| BUG_REP
+    BUG_REP --> SPAWN_DD --> DD_DONE --> REVERIFY --> ROUND
+    ROUND -->|"是"| EXEC
+    ROUND -->|"否 → UNRESOLVED"| REPORT
+
+    REPORT --> DONE
+
+    classDef teal fill:#b2dfdb,stroke:#00796b,color:#004d40
+    classDef fix fill:#ffccbc,stroke:#e64a19,color:#bf360c
+    classDef go fill:#c8e6c9,stroke:#388e3c,color:#1b5e20
+
+    class READ,EXTRACT,CLASSIFY,EXEC,ALL_PASS,REPORT teal
+    class GRADE,TRIVIAL,T_OK,BUG_REP,SPAWN_DD,DD_DONE,REVERIFY,ROUND fix
+    class DONE go

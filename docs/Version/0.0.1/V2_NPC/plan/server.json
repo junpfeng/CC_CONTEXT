@@ -1,0 +1,249 @@
+{
+  "title": "大世界V2 NPC系统 - 服务端设计详情",
+
+  "server_design": {
+    "architecture_overview": "服务端扩展现有SceneNpcMgr框架，通过SceneType=BigWorld分支注册独立的ExtHandler、Pipeline配置、Spawner。共享common/ai层的Pipeline引擎、Handler基类、V2Brain，场景特化代码在ecs/res/npc_mgr和ecs/com/cnpc中。",
+
+    "data_models": [
+      {
+        "name": "BigWorldSceneNpcExt",
+        "storage": "memory",
+        "description": "实现SceneNpcExt接口，大世界NPC的ECS组件扩展。类似TownSceneNpcExt但不依赖Town的任何字段。",
+        "fields": [
+          {"name": "spawnConfig", "type": "*BigWorldNpcSpawnConfig", "description": "生成配置（密度/上限/半径）"},
+          {"name": "scheduleConfig", "type": "map[string]*ScheduleTemplate", "description": "V2_BigWorld日程模板（加载自JSON配置）"},
+          {"name": "sensorPlugins", "type": "[]SensorPlugin", "description": "大世界专属感知插件列表"}
+        ],
+        "file": "P1GoServer/servers/scene_server/internal/ecs/com/cnpc/bigworld_npc.go"
+      },
+      {
+        "name": "BigWorldNpcSpawnConfig",
+        "storage": "memory",
+        "description": "大世界NPC生成参数配置（从配置表加载）",
+        "fields": [
+          {"name": "MaxCount", "type": "int", "description": "最大NPC数量，默认50"},
+          {"name": "SpawnRadius", "type": "float32", "description": "生成半径（米），默认200"},
+          {"name": "DespawnRadius", "type": "float32", "description": "回收半径，默认300（spawn的1.5倍）"},
+          {"name": "SpawnDensity", "type": "float32", "description": "生成密度（每10000m²的NPC数）"},
+          {"name": "SpawnBatchSize", "type": "int", "description": "每帧最大生成数，默认3"},
+          {"name": "DespawnDelay", "type": "float32", "description": "回收延迟（秒），默认3.0（防边界抖动）"}
+        ],
+        "file": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_npc_spawner.go"
+      },
+      {
+        "name": "BigWorldNpcSpawner",
+        "storage": "memory",
+        "description": "AOI驱动的NPC动态生成/回收管理器，作为SceneNpcMgr的子组件",
+        "fields": [
+          {"name": "config", "type": "*BigWorldNpcSpawnConfig", "description": "生成配置"},
+          {"name": "npcMgr", "type": "*SceneNpcMgr", "description": "上层NPC管理器引用"},
+          {"name": "activeNpcs", "type": "map[uint64]*activeNpcInfo", "description": "当前活跃NPC（ID→位置/创建时间/最近玩家距离）"},
+          {"name": "pendingDespawn", "type": "map[uint64]float64", "description": "待回收NPC（ID→超出边界时间戳）"},
+          {"name": "spawnPoints", "type": "[]Vector3", "description": "预计算的大世界NPC可生成点（路网节点子集）"},
+          {"name": "rng", "type": "*rand.Rand", "description": "随机数生成器（确定性种子）"},
+          {"name": "safeSpawnPoints", "type": "[]Vector3", "description": "<!-- [迭代3修复] C2 --> 预置安全生成点（路网核心节点子集，已验证Y坐标和可达性），FindSpawnPosition连续失败时降级使用"}
+        ],
+        "file": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_npc_spawner.go"
+      }
+    ],
+
+    "actors": [
+      {
+        "name": "SceneNpcMgr（扩展现有）",
+        "responsibilities": [
+          "createExt()工厂新增BigWorld分支，返回BigWorldSceneNpcExt",
+          "CreateNpc/DestroyNpc流程不变，通过extHandler回调差异化",
+          "TickPipeline中对BigWorld NPC执行OrthogonalPipeline.Tick()"
+        ],
+        "handlers": ["CreateNpc", "DestroyNpc", "TickSensor", "TickPipeline"],
+        "modifications": [
+          "scene_npc_mgr.go: createExt()添加 case SceneType_BigWorld: return NewBigWorldSceneNpcExt()",
+          "scene_npc_mgr.go: 初始化时如果sceneType==BigWorld，创建BigWorldNpcSpawner并启动"
+        ],
+        "file": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/scene_npc_mgr.go"
+      },
+      {
+        "name": "BigWorldExtHandler（新增）",
+        "responsibilities": [
+          "OnNpcCreated: 注入感知插件、加载V2_BigWorld日程配置、随机外观分配、初始化NpcState字段",
+          "OnNpcDestroyed: 清理感知插件注册、回收资源",
+          "GetSensorPlugins: 返回大世界专属感知插件列表（StateSensor/EventSensor/DistanceSensor/ScheduleSensor）"
+        ],
+        "handlers": ["OnNpcCreated", "OnNpcDestroyed", "GetSensorPlugins"],
+        "design_notes": [
+          "不import town_ext_handler.go，完全独立实现",
+          "感知插件参数使用BigWorld专属配置（检测距离更大，因为大世界场景开阔）",
+          "外观分配从BigWorld专属的NPC配置表中随机选择（与小镇外观池隔离）"
+        ],
+        "file": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_ext_handler.go"
+      },
+      {
+        "name": "BigWorldNpcSpawner（新增）",
+        "responsibilities": [
+          "<!-- [迭代11修复] I2: 明确TickSpawn调用频率 --> TickSpawn: 每500ms（约15帧@30fps）调用一次，由bigworld_npc_update.go System通过帧计数器控制（每15帧调用一次TickSpawn）。TickDespawn与TickSpawn同频交替执行（奇数周期Spawn，偶数周期Despawn，避免同一Tick内同时大量创建和回收）。高频调用浪费CPU（大部分Tick无事可做），低频调用导致NPC生成延迟，500ms是生成响应与CPU开销的平衡点",
+          "FindSpawnPosition: 在spawn_radius内从spawnPoints中随机选择可用生成点（使用路网节点）",
+          "CheckDespawn: <!-- [迭代3修复] I1: 遍历所有在线玩家 --> 遍历所有在线玩家取最近XZ平方距离（feedback_squared_distance），仅当所有玩家都超出despawn_radius²且持续DespawnDelay秒才触发回收",
+          "初始化时从路网数据中预计算spawnPoints子集"
+        ],
+        "handlers": ["TickSpawn", "FindSpawnPosition", "CheckDespawn"],
+        "design_notes": [
+          "距离计算使用XZ平方距离，禁止曼哈顿距离和3D距离",
+          "生成点使用路网节点而非随机坐标，确保NPC生成在有效路面上",
+          "生成时Y坐标通过Grounds层(layer 6) Raycast修正，不混用Default层",
+          "<!-- [迭代3修复] C2: 补充生成点有效性验证流程 -->",
+          "【FindSpawnPosition验证步骤】(1) 从spawn_radius内路网节点随机选取候选点 (2) 从Y=200对候选点做Grounds层Raycast，未命中则跳过 (3) Raycast命中点Y<50（海洋水面，参考reference_bigworld_ocean_height）则标记InWater并跳过 (4) 对命中点做可达性检查（检查周围2m内是否有路网连通节点） (5) <!-- [迭代11修复] 遗漏场景1: 生成点最小距离检查 --> 候选点与任意在线玩家XZ平方距离<10m²（约3.16m）时跳过，防止NPC凭空出现在玩家面前 (6) 连续N=10次选点失败时，降级使用预置的安全生成点集合（safeSpawnPoints，场景初始化时从路网核心节点预计算）"
+        ],
+        "file": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_npc_spawner.go"
+      }
+    ],
+
+    "handlers_detail": [
+      {
+        "name": "BigWorldLocomotionHandler",
+        "dimension": "locomotion",
+        "description": "根据日程状态和移动目标决定NPC移动模式",
+        "plans": [
+          {"name": "idle", "description": "NPC静止（无移动目标或到达目标点）"},
+          {"name": "walk", "description": "NPC步行移动（日常巡逻、休息点切换）"},
+          {"name": "run", "description": "NPC奔跑（受威胁时加速逃离，P0简化版）"}
+        ],
+        "state_reads": ["ScheduleState", "MovementState", "PerceptionState"],
+        "state_writes": ["MovementState.MoveMode"],
+        "file": "P1GoServer/common/ai/execution/handlers/bigworld_locomotion_handler.go"
+      },
+      {
+        "name": "BigWorldNavigationHandler",
+        "dimension": "navigation",
+        "description": "执行A*寻路并更新移动路径",
+        "plans": [
+          {"name": "pathfind", "description": "计算A*路径到目标点"},
+          {"name": "follow_path", "description": "沿已计算路径移动（逐路点前进）"},
+          {"name": "arrived", "description": "到达目标点，通知locomotion切换"}
+        ],
+        "state_reads": ["MovementState.TargetPos", "SelfState.Position"],
+        "state_writes": ["MovementState.Path", "MovementState.CurrentWaypoint", "MovementState.Speed"],
+        "internal_fields": [
+          "<!-- [迭代3修复] I2 --> pendingRequestId uint64 — 当前异步寻路请求ID（递增，新请求覆盖旧请求）",
+          "continuationFrameCount int — 当前异步续算已执行帧数",
+          "maxContinuationFrames int — 异步续算上限（默认10帧）"
+        ],
+        "design_notes": [
+          "使用大世界路网A*寻路（50K路点），利用LRU缓存（50条）",
+          "每帧路径展开上限500节点，超时则下帧继续（分帧异步）。<!-- [迭代3修复] I2: 异步续算超时与取消 --> maxContinuationFrames=10，超过10帧未完成则视为寻路失败回退Idle；等待期间NPC保持当前状态（Idle原地等待，或继续走已有路径片段）；新寻路请求自动取消前一个未完成的异步请求（通过requestId递增判断）",
+          "路径终点追加实际目标点（feedback_roadnet_path_gap防死循环）",
+          "Y坐标通过Grounds层Raycast修正（feedback_bigworld_y_offset）",
+          "<!-- [迭代3修复] C1: 补充NPC与载具路网共享协调机制 -->",
+          "【路网共享协调】NPC寻路时优先选择人行道/路肩路点（路网节点若有lane_type标记则优先sidewalk/shoulder类型，无标记时走路边缘）",
+          "【载具避让】NPC移动时前方检测：每帧对前方5m扇形范围做XZ平方距离检测，发现载具实体则暂停移动等待载具通过（复用TrafficManager的载具位置数据），等待超时3s后尝试侧移1.5m绕行",
+          "<!-- [迭代11修复] I3: TrafficManager未就绪时降级 --> 【路口信号灯】NPC经过路口时读取TrafficLightManager当前信号灯状态，红灯时在路口边缘等待，绿灯时通行（复用大世界交通系统已有数据，参考feedback_traffic_opposite_filter避免死锁）。TrafficManager未就绪降级策略：NavigationHandler中GetTrafficManager()返回nil时视为绿灯（默认通行），不做等红灯判断，NPC正常通过路口；TrafficLightSensor中TrafficManager==nil时写入TrafficLightState=Green（默认通行），确保NPC在交通系统初始化完成前不会卡死在路口。<!-- [迭代9修复] 遗漏场景1: NPC路口堆叠 --> 多NPC在同一路口等红灯时分散站位：每个NPC在等待点基础上加随机XZ偏移（±1.5m范围，使用npcId作为种子确保稳定），防止重叠穿模",
+          "<!-- [迭代11修复] 遗漏场景2: 多NPC同一路点拥堵 --> 【路点拥堵处理】P0阶段允许多个NPC同时到达同一路点时重叠通过（不做碰撞推挤），NPC间无物理排斥。此为已知P0限制，不影响gameplay（环境NPC无交互需求）。P1可扩展：NPC到达路点时检测周围1m内其他NPC数量，超过2个则随机偏移±1m避免视觉堆叠",
+          "<!-- [迭代9修复] C1: 删除矛盾的碰撞描述，统一以plan.json collision_setting为准 --> 【碰撞体策略】P0阶段NPC使用Kinematic Rigidbody + CapsuleCollider(isTrigger=false)，NPC层与Vehicle层设为碰撞检测但不响应物理力（OnCollisionStay检测但不推动），载具避让通过服务端NavigationHandler的前方检测实现，客户端碰撞策略详见plan.json collision_setting"
+        ],
+        "file": "P1GoServer/common/ai/execution/handlers/bigworld_navigation_handler.go"
+      },
+      {
+        "name": "BigWorldEngagementHandler",
+        "dimension": "engagement",
+        "description": "P0简化版：仅检测威胁，不实现战斗逻辑",
+        "plans": [
+          {"name": "idle", "description": "无威胁，NPC正常活动"},
+          {"name": "alert", "description": "感知到威胁（玩家攻击），提升警觉"},
+          {"name": "flee", "description": "威胁严重，触发逃跑行为"}
+        ],
+        "state_reads": ["PerceptionState.ThreatLevel", "PerceptionState.NearbyEntities"],
+        "state_writes": ["CombatState.AlertLevel"],
+        "design_notes": ["P0不实现追捕/战斗/警察逻辑，仅检测→警觉→逃跑三状态"],
+        "file": "P1GoServer/common/ai/execution/handlers/bigworld_engagement_handler.go"
+      },
+      {
+        "name": "BigWorldExpressionHandler",
+        "dimension": "expression",
+        "description": "根据情绪和感知决定NPC反应动画",
+        "plans": [
+          {"name": "neutral", "description": "正常表情"},
+          {"name": "look_at", "description": "注视靠近的玩家"},
+          {"name": "react", "description": "情绪反应（惊讶/害怕/愤怒等）"}
+        ],
+        "state_reads": ["EmotionState.MoodLevel", "PerceptionState.NearbyPlayers"],
+        "state_writes": ["ExpressionState.ReactType", "ExpressionState.AnimId"],
+        "file": "P1GoServer/common/ai/execution/handlers/bigworld_expression_handler.go"
+      }
+    ],
+
+    "pipeline_config": {
+      "description": "BigWorld V2Pipeline维度配置（注册在v2_pipeline_defaults.go）",
+      "dimensions": [
+        {"name": "engagement", "priority": 1, "tick_order": 1, "description": "最先执行，决定威胁响应"},
+        {"name": "expression", "priority": 2, "tick_order": 2, "description": "次之，决定表情反应"},
+        {"name": "locomotion", "priority": 3, "tick_order": 3, "description": "读取engagement结果决定移动模式"},
+        {"name": "navigation", "priority": 4, "tick_order": 4, "description": "最后执行，根据locomotion模式执行寻路"}
+      ],
+      "registration": "v2_pipeline_factory.go中添加 RegisterV2Pipeline(SceneType_BigWorld, bigworldDimensionConfig)"
+    },
+
+    "ai_lod": {
+      "description": "服务端AI LOD分级策略（距离基于NPC与最近玩家的XZ距离）",
+      "levels": [
+        {"name": "HIGH", "distance": "0-100m", "tick_interval": "每帧", "sensor_interval": "500ms"},
+        {"name": "MEDIUM", "distance": "100-200m", "tick_interval": "每3帧", "sensor_interval": "1500ms"},
+        {"name": "LOW", "distance": "200-300m", "tick_interval": "每10帧", "sensor_interval": "5000ms"}
+      ]
+    },
+
+    "error_codes": [
+      {
+        "code": "ERR_BIGWORLD_NPC_LIMIT",
+        "description": "大世界NPC数量达到上限",
+        "trigger": "BigWorldNpcSpawner.TickSpawn中activeNpcs数量>=MaxCount",
+        "handling": "log.Warnf记录，跳过本次生成，等待回收后重试"
+      },
+      {
+        "code": "ERR_BIGWORLD_NPC_PATH_NOT_FOUND",
+        "description": "大世界NPC A*寻路失败",
+        "trigger": "BigWorldNavigationHandler调用A*寻路返回nil",
+        "handling": "log.Errorf含NPC位置和目标位置，NPC回退Idle状态"
+      },
+      {
+        "code": "ERR_BIGWORLD_NPC_SPAWN_POINT_INVALID",
+        "description": "生成点无效（Y坐标修正失败）",
+        "trigger": "Grounds层Raycast未命中",
+        "handling": "跳过该生成点，选择下一个候选点"
+      },
+      {
+        "code": "ERR_BIGWORLD_NPC_SCHEDULE_NOT_FOUND",
+        "description": "日程配置未找到",
+        "trigger": "NPC配置引用的V2_BigWorld日程ID不存在",
+        "handling": "使用默认日程（patrol），log.Errorf记录配置缺失"
+      }
+    ],
+
+    "npcstate_field_changes": {
+      "_comment": "<!-- [迭代3修复] I5: NpcState新增字段变更清单，防止遗漏Snapshot+FieldAccessor同步 -->",
+      "new_fields": [
+        {"field": "ScheduleState.ScheduleId", "type": "string", "comp": "BigWorldSceneNpcExt", "sync": true, "snapshot_method": "SnapshotSchedule()", "field_accessor": "RegisterField('schedule_id', StringAccessor)"},
+        {"field": "ScheduleState.BehaviorType", "type": "int32", "comp": "BigWorldSceneNpcExt", "sync": true, "snapshot_method": "SnapshotSchedule()", "field_accessor": "RegisterField('behavior_type', Int32Accessor)"},
+        {"field": "ScheduleState.TargetAreaId", "type": "string", "comp": "BigWorldSceneNpcExt", "sync": true, "snapshot_method": "SnapshotSchedule()", "field_accessor": "RegisterField('target_area_id', StringAccessor)"},
+        {"field": "PerceptionState.NearbyVehicles", "type": "[]uint64", "comp": "SensorSystem", "sync": true, "snapshot_method": "SnapshotPerception()", "field_accessor": "RegisterField('nearby_vehicles', Uint64SliceAccessor)"},
+        {"field": "MovementState.MoveMode", "type": "int32", "comp": "BigWorldLocomotionHandler", "sync": true, "snapshot_method": "SnapshotMovement()", "field_accessor": "已有，无需新增"},
+        {"field": "CombatState.AlertLevel", "type": "int32", "comp": "BigWorldEngagementHandler", "sync": true, "snapshot_method": "SnapshotCombat()", "field_accessor": "RegisterField('alert_level', Int32Accessor)"},
+        {"field": "ExpressionState.ReactType", "type": "int32", "comp": "BigWorldExpressionHandler", "sync": true, "snapshot_method": "SnapshotExpression()", "field_accessor": "RegisterField('react_type', Int32Accessor)"},
+        {"field": "ExpressionState.AnimId", "type": "int32", "comp": "BigWorldExpressionHandler", "sync": true, "snapshot_method": "SnapshotExpression()", "field_accessor": "RegisterField('expr_anim_id', Int32Accessor)"},
+        {"field": "MovementState.lastValidY", "type": "float32", "comp": "BigWorldNavigationHandler", "sync": false, "_comment": "<!-- [迭代11修复] C2 --> 服务端专用，Raycast降级兜底Y值，不入Snapshot不通过网络下发，Release()时重置为0"},
+        {"field": "PerceptionState.TrafficLightState", "type": "int32(enum)", "comp": "SensorSystem.TrafficLightSensor", "sync": false, "_comment": "<!-- [迭代11修复] C2 --> 服务端专用，SensorSystem写入后同Tick内NavigationHandler读取，不需要网络下发。枚举值：Unknown=0/Red=1/Green=2/Yellow=3。不入Snapshot，Release()时重置为Unknown(0)"}
+      ],
+      "sync_field_policy": "<!-- [迭代11修复] C2: 新增字段sync标注规范 --> 每个NpcState新增字段必须标注sync:true或sync:false。sync=true的字段必须同步更新Snapshot方法和FieldAccessor注册；sync=false的字段标注'服务端专用，不入Snapshot'，仅需在Release()归池时重置。实现时据此判断是否需要网络同步",
+      "checklist": "实现时每新增一个NpcState字段，必须同步修改：(1) 检查sync标注决定是否入Snapshot (2) sync=true: 更新Snapshot方法+FieldAccessor注册 (3) sync=false: 仅确保Release()归池重置 (4) 所有字段均需Release()归池重置"
+    },
+
+    "key_constraints": [
+      "BigWorld ExtHandler不import Town/Sakura的任何扩展处理器代码（REQ-013）",
+      "共享框架代码在common/ai层，场景特化代码在ecs/res/npc_mgr和ecs/com/cnpc中",
+      "NpcState新增字段必须同步Snapshot+FieldAccessor（feedback_npcstate_snapshot_sync）",
+      "System层不能import npc_mgr，需在scene_impl接线（feedback_circular_import）",
+      "距离计算用XZ平方距离（feedback_squared_distance）",
+      "日程配置以V2_BigWorld前缀标识（feedback_v2_schedule_isolation）",
+      "配置文件必须走打表流程（feedback_config_must_use_pipeline）",
+      "<!-- [迭代3修复] C1: NPC移动需协调交通系统 --> NPC NavigationHandler需读取TrafficManager载具位置和TrafficLightManager信号灯状态，通过scene_impl接线（不直接import traffic包）"
+    ]
+  }
+}

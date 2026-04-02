@@ -1,0 +1,1 @@
+{"className":"S","methodName":"Main","csharpCode":"using UnityEngine;\npublic class S{public static object Main(){var t=System.Type.GetType(\"UnityEditor.GameView,UnityEditor\");if(t!=null)UnityEditor.EditorWindow.GetWindow(t,false,\"Game\",true);return \"ok\";}}"}

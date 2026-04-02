@@ -1,0 +1,59 @@
+task_id	attempt	action	duration_s	compile_ok	review_critical	review_high	decision	reason
+task-05	2	review	461	true	0	3	pending	-
+task-05	4	review	367	true	0	4	pending	-
+task-05	4	discard-fix	0	true	0	4	discard	修复导致质量恶化 3->4
+task-05	1	develop+commit	2039	true	0	0	keep	质量达标
+task-01	2	review	302	true	0	0	pending	-
+task-01	2	keep	302	true	0	0	keep	质量达标
+task-01	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-06	2	review	381	true	0	2	pending	-
+task-06	2	keep	381	true	0	2	keep	质量达标
+task-06	1	develop+commit	1200	true	0	0	keep	质量达标
+task-05	2	review	461	true	0	3	pending	-
+task-05	4	review	367	true	0	4	pending	-
+task-05	4	discard-fix	0	true	0	4	discard	修复导致质量恶化 3->4
+task-05	1	develop+commit	2039	true	0	0	keep	质量达标
+task-01	2	review	302	true	0	0	pending	-
+task-01	2	keep	302	true	0	0	keep	质量达标
+task-01	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-02	2	review	245	true	0	2	pending	-
+task-02	2	keep	245	true	0	2	keep	质量达标
+task-02	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-07	2	review	495	true	1	2	pending	-
+task-07	4	review	362	true	0	1	pending	-
+task-07	4	keep	362	true	0	1	keep	质量达标
+task-07	1	develop+commit	1684	true	0	0	keep	质量达标
+task-05	2	review	461	true	0	3	pending	-
+task-05	4	review	367	true	0	4	pending	-
+task-05	4	discard-fix	0	true	0	4	discard	修复导致质量恶化 3->4
+task-05	1	develop+commit	2039	true	0	0	keep	质量达标
+task-01	2	review	302	true	0	0	pending	-
+task-01	2	keep	302	true	0	0	keep	质量达标
+task-01	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-06	2	review	381	true	0	2	pending	-
+task-06	2	keep	381	true	0	2	keep	质量达标
+task-06	1	develop+commit	1200	true	0	0	keep	质量达标
+task-05	2	review	461	true	0	3	pending	-
+task-05	4	review	367	true	0	4	pending	-
+task-05	4	discard-fix	0	true	0	4	discard	修复导致质量恶化 3->4
+task-05	1	develop+commit	2039	true	0	0	keep	质量达标
+task-01	2	review	302	true	0	0	pending	-
+task-01	2	keep	302	true	0	0	keep	质量达标
+task-01	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-02	2	review	245	true	0	2	pending	-
+task-02	2	keep	245	true	0	2	keep	质量达标
+task-02	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-03	2	review	392	true	0	3	pending	-
+task-03	4	review	361	true	1	3	pending	-
+task-03	4	discard-fix	0	true	1	3	discard	修复导致质量恶化 3->4
+task-03	1	develop+commit(wt)	0	true	0	0	keep	worktree并行完成
+task-04	2	review	249	true	2	7	pending	-
+task-04	4	review	320	true	1	3	pending	-
+task-04	6	review	322	true	0	3	pending	-
+task-04	8	review	284	true	0	5	pending	-
+task-04	8	discard-fix	0	true	0	5	discard	修复导致质量恶化 3->5
+task-04	1	develop+commit	3270	true	0	0	keep	质量达标
+task-08	2	review	425	true	1	0	pending	-
+task-08	4	review	407	true	0	0	pending	-
+task-08	4	keep	407	true	0	0	keep	质量达标
+task-08	1	develop+commit	2303	true	0	0	keep	质量达标

@@ -1,0 +1,32 @@
+{
+  "screenshots": [],
+  "logs": {
+    "unity_console": "[WARNING] AnimalAnimationComp.PlayAnimation: 未找到 Clip=walk (反复出现于 Dog 类型动物)\n[WARNING] gate|[ForwardHandler] call failed: module=2, cmd=3200, err=&{7 14002}\n[TEST_PRE] About to send AnimalFeed\n[TEST_POST] AnimalFeed task created, status=Pending\nNo Feed/Interact/喂食 logs found in 50 Info + 50 Warning entries",
+    "server_log": "[WARNING] gate|[ForwardHandler] call failed: module=2, cmd=3200, err=&{7 14002}\nScene server started at 11:22:24, zero AnimalFeed handler logs"
+  },
+  "mcp_state": {
+    "editor_state": "Playing",
+    "gameobjects_checked": ["AnimalController x4 dogs: NetId=57,58,59,60"]
+  },
+  "runtime_data": {
+    "dog_positions": "Dog59=(-77.4,60.1,-1814.2) Dog60=(-121.1,60.2,-1805.8) Dog57=(-41.4,60.2,-1854.6) Dog58=(-79.9,59.4,-1901.5)",
+    "feed_request_test": "NetCmd.AnimalFeed(AnimalId=59) → UniTask stays Pending forever, callback never fires",
+    "gateway_error": "module=2 cmd=3200 err={7 14002} = Error14002 (距离过远)",
+    "client_no_response": "Zero net error logs from client despite server returning error",
+    "root_cause_A": "Client uses interpolated render position for 3m range check, server uses raw entity position. Dog wanders → server position ahead of client visual → server rejects with 14002 while client shows feed button",
+    "root_cause_B": "Gateway forwards RPC error via ctx.ErrData but client UniTask never receives completion. Possibly native plugin NetPluginWrap error response handling issue",
+    "key_files": {
+      "client_interact": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/Animal/Comp/AnimalInteractComp.cs",
+      "server_feed": "P1GoServer/servers/scene_server/internal/net_func/npc/animal_feed.go",
+      "gateway_forward": "P1GoServer/servers/gateway_server/internal/service/forward_handler.go:132-144",
+      "client_netchannel": "freelifeclient/Assets/Scripts/Gameplay/Managers/Net/NetChannel.cs:353-540"
+    }
+  },
+  "collection_timestamp": "2026-04-01T11:40:00+08:00",
+  "source_timestamps": {
+    "unity_console": "2026-04-01T11:34:07+08:00",
+    "server_log": "2026-04-01T11:34:07+08:00",
+    "editor_state": "2026-04-01T11:26:00+08:00",
+    "screenshots": "2026-04-01T11:39:00+08:00"
+  }
+}

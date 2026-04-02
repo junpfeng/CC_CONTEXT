@@ -1,0 +1,21 @@
+{
+  "requirement_doc": "docs/version/0.0.4/weapon_system/idea.md",
+  "design_doc_dir": "docs/version/0.0.4/weapon_system",
+  "current_phase": "P0",
+  "started_at": "2026-04-02T13:30:00Z",
+  "updated_at": "2026-04-02T13:30:00Z",
+  "phases": {
+    "P0": {"status": "in_progress"},
+    "P1": {"status": "pending"},
+    "P2": {"status": "pending"},
+    "P3": {"status": "pending"},
+    "P4": {"status": "pending"},
+    "P5": {"status": "pending"},
+    "P6": {"status": "pending"},
+    "P7": {"status": "pending"}
+  },
+  "tasks": {},
+  "waves": {},
+  "git_checkpoints": {},
+  "review_rounds": []
+}

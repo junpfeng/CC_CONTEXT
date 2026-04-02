@@ -1,0 +1,30 @@
+{
+  "requirement_doc": "docs/version/0.0.3/summon_wheel/idea.md",
+  "design_doc_dir": "docs/version/0.0.3/summon_wheel",
+  "current_phase": "P5",
+  "started_at": "2026-03-31T12:00:00Z",
+  "updated_at": "2026-03-31T12:30:00Z",
+  "phases": {
+    "P0": {"status": "completed", "completed_at": "2026-03-31T12:01:00Z"},
+    "P1": {"status": "completed", "completed_at": "2026-03-31T12:02:00Z"},
+    "P2": {"status": "completed", "completed_at": "2026-03-31T12:05:00Z"},
+    "P3": {"status": "completed", "completed_at": "2026-03-31T12:06:00Z"},
+    "P4": {"status": "completed", "completed_at": "2026-03-31T12:30:00Z"},
+    "P5": {"status": "in_progress"},
+    "P6": {"status": "pending"},
+    "P7": {"status": "pending"}
+  },
+  "tasks": {
+    "TASK-001": {"wave": 0, "status": "completed", "decision": "keep"},
+    "TASK-002": {"wave": 0, "status": "completed", "decision": "keep"},
+    "TASK-003": {"wave": 1, "status": "completed", "decision": "keep"},
+    "TASK-004": {"wave": 2, "status": "completed", "decision": "keep"}
+  },
+  "waves": {
+    "wave-0": {"compile_ok": true},
+    "wave-1": {"compile_ok": true},
+    "wave-2": {"compile_ok": true}
+  },
+  "git_checkpoints": {},
+  "review_rounds": []
+}

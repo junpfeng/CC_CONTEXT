@@ -1,0 +1,31 @@
+{
+  "requirement_doc": "docs/version/0.0.4/gta5_animal_system/idea.md",
+  "design_doc_dir": "docs/version/0.0.4/gta5_animal_system",
+  "current_phase": "P5",
+  "started_at": "2026-03-31T10:30:00Z",
+  "updated_at": "2026-03-31T11:35:00Z",
+  "phases": {
+    "P0": {"status": "completed", "completed_at": "2026-03-31T10:31:00Z"},
+    "P1": {"status": "completed", "completed_at": "2026-03-31T10:33:00Z"},
+    "P2": {"status": "completed", "completed_at": "2026-03-31T10:40:00Z"},
+    "P3": {"status": "completed", "completed_at": "2026-03-31T10:43:00Z"},
+    "P4": {"status": "completed", "completed_at": "2026-03-31T11:35:00Z"},
+    "P5": {"status": "in_progress"},
+    "P6": {"status": "pending"},
+    "P7": {"status": "pending"}
+  },
+  "tasks": {
+    "TASK-001": {"wave": 0, "status": "compiled", "decision": "keep", "fix_rounds": 0},
+    "TASK-002": {"wave": 1, "status": "compiled", "decision": "keep", "fix_rounds": 0},
+    "TASK-003": {"wave": 1, "status": "compiled", "decision": "keep", "fix_rounds": 0},
+    "TASK-004": {"wave": 2, "status": "compiled", "decision": "keep", "fix_rounds": 0},
+    "TASK-005": {"wave": 2, "status": "compiled", "decision": "keep", "fix_rounds": 0}
+  },
+  "waves": {
+    "wave-0": {"compile_ok": true},
+    "wave-1": {"compile_ok": true},
+    "wave-2": {"compile_ok": true}
+  },
+  "git_checkpoints": {},
+  "review_rounds": []
+}

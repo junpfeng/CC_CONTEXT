@@ -1,0 +1,24 @@
+{
+  "screenshots": ["docs/bugs/0.0.3/GM_System/1/images/GM_System_bug1_game_view.png"],
+  "logs": {
+    "server_log": "[INFO] become_rich: 已设置所有货币为999999999\n[INFO] become_rich: 已添加 47 把武器\n[INFO] become_rich: 已添加 82 辆载具"
+  },
+  "mcp_state": {
+    "editor_state": "Play"
+  },
+  "runtime_data": {
+    "wallet_sync": "SetSync+SetSave called, client shows currency correctly",
+    "weapon_add": "47 weapons added via backpackComp.AddItem (internally calls triggerItemChangeEvent->SetSync)",
+    "vehicle_add": "82 vehicles appended to VehicleList, SetSync+SetSave called",
+    "client_backpack_ui": "empty - no weapons visible",
+    "client_weapon_wheel": "empty - no weapons visible",
+    "client_phone_vehicle": "empty - no vehicles visible",
+    "after_relogin": "still not visible"
+  },
+  "analysis": {
+    "server_side": "Data write confirmed correct - 47 weapons + 82 vehicles + all currency",
+    "suspect_weapon": "AddItem adds to backpack cells, but weapon system may require separate unlock/equip registration beyond backpack storage",
+    "suspect_vehicle": "VehicleList append with empty BaseInfo and empty PartList may cause client-side filtering"
+  },
+  "collection_timestamp": "2026-04-01T18:40:00+08:00"
+}

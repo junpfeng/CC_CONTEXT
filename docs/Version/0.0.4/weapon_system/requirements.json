@@ -1,0 +1,95 @@
+{
+  "name": "GTA5 风格玩家武器系统",
+  "overview": "打通已有武器框架（WeaponComp + PlayerGunFightComp + damage），补齐掏枪→瞄准→射击→伤害闭环，新增辅助瞄准",
+  "classification": "direct",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "武器持久化与登录下发",
+      "description": "服务端 PlayerWeaponBag 持久化到 MongoDB，登录时通过 WeaponBagNtf 下发，新角色默认初始化手枪",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "WeaponBagNtf 协议存在于 old_proto/",
+        "服务端 make build 通过",
+        "新角色登录后客户端收到武器背包数据"
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "title": "掏枪/收枪",
+      "description": "WeaponComp 新增 DrawWeapon/HolsterWeapon，触发上半身动画+武器模型挂载，DrawWeaponReq/Res 同步状态，服务端校验玩家状态",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "DrawWeaponReq/Res 协议存在",
+        "按键后武器模型出现在手部",
+        "服务端在死亡/上车状态下拒绝掏枪请求"
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "title": "瞄准系统",
+      "description": "补齐 PlayerGunFightComp Aim 状态：准心 UI、相机 FOV 缩放、IK 权重渐入",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "按住瞄准键后屏幕出现准心",
+        "相机 FOV 从默认缩到约 40 度",
+        "松开后恢复默认视角"
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "title": "辅助瞄准（Snap-to）",
+      "description": "新增 AimAssistComp，OverlapSphere 检测扇形区域内最近敌人，自动 Snap 相机朝向，无目标回退自由视角",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "AimAssistComp 类存在",
+        "瞄准时自动锁定最近 NPC",
+        "无目标时回退自由视角"
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "title": "射击流程与伤害",
+      "description": "客户端 Raycast 命中检测 → ShotData/HitData 上报 → 服务端 CheckManager 验证(RPM+距离+方向) → DealDamage → 广播",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "射击动画播放",
+        "命中 NPC 后服务端 DealDamage 被调用",
+        "RPM 超频请求被拒绝并返回错误码"
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "title": "伤害反馈 UI",
+      "description": "命中时 Hit Marker（准心闪白），目标播放受击动画",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": [
+        "命中目标时准心出现闪白效果",
+        "NPC 被击中后播放受击反馈"
+      ]
+    }
+  ],
+  "technical_constraints": [
+    {"category": "架构", "description": "服务器权威，客户端仅表现和输入"},
+    {"category": "性能", "description": "手机端性能预算，AimAssist 检测需节流"},
+    {"category": "网络", "description": "Go 服务端无物理引擎，命中校验降级为距离+方向角度"}
+  ],
+  "projects": ["P1GoServer", "freelifeclient", "old_proto"],
+  "dependencies": [
+    "已有 WeaponComp/PlayerGunFightComp 框架",
+    "已有 damage/ 包和 CheckManager",
+    "已有 ShotData/HitData 协议",
+    "已有 citem.Weapon 数据结构"
+  ],
+  "risks": [
+    "PlayerWeaponIK 不存在，IK 持枪姿态可能需要在 GunFightComp 内实现",
+    "Weapon.xlsx 中可能无 DesertEagle 条目需兜底",
+    "掏枪动画资源缺失，使用 Idle blend 过渡效果待验证"
+  ]
+}

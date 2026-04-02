@@ -1,0 +1,186 @@
+{
+  "name": "BigWorld_NPC 技术规格",
+  "overview": "将大世界NPC从6组件/4状态的最小实现，升级为接近小镇V2水准的完整AI系统。复用V2Brain决策引擎、情绪系统、日程系统，新增LOD分级和多NPC类型支持，满足手游AOI场景50+NPC的性能预算。",
+  "complexity": "complex",
+  "sub_files": [
+    "plan/server.json",
+    "plan/client.json",
+    "plan/flow.json",
+    "plan/protocol.json",
+    "plan/testing.json"
+  ],
+
+  "phases": {
+    "P0": {
+      "title": "AI管线激活 + 日程驱动",
+      "goal": "让大世界NPC由V2Brain驱动，日程系统时间→路点，BtTickSystem正常运行",
+      "deliverables": [
+        "BigWorld场景注册BtTickSystem",
+        "BigWorldNpcBehaviorComp（复用TownNpcComp字段子集：emotion/react/schedule）",
+        "大世界V2Brain JSON配置（Wander/Idle/Schedule三Plan）",
+        "客户端新增Flee/Nervous/Curious三个状态"
+      ]
+    },
+    "P1": {
+      "title": "情绪系统 + 多NPC类型 + LOD",
+      "goal": "四类情绪（Scared/Nervous/Curious/Angry），行人/商贩/警察配置分离，三级LOD",
+      "deliverables": [
+        "BigWorldNpcEmotionSystem（服务端情绪衰减tick）",
+        "多NPC类型配置（BigWorldNpcTypeCfg）",
+        "三级LOD（Near/Mid/Far tick频率 + 动画精度）",
+        "客户端新增Angry/Investigate状态"
+      ]
+    },
+    "P2": {
+      "title": "社交互动 + 警察系统",
+      "goal": "打电话/围观互动，警察视野检测+追捕",
+      "deliverables": [
+        "PhoneComp/GawkComp移植到大世界",
+        "BigWorldPoliceComp（60°视野圆锥，参考TownNpcPoliceComp）"
+      ]
+    }
+  },
+
+  "key_decisions": [
+    {
+      "decision": "V2Brain直接复用，不新建决策引擎",
+      "reason": "V2Brain已支持优先级+概率+表达式条件，只需新增BigWorld专属JSON配置文件"
+    },
+    {
+      "decision": "BigWorldNpcBehaviorComp独立于TownNpcComp",
+      "reason": "两者字段集合不同（大世界无交易/警察），保持V2前缀隔离原则（auto-work-lesson-002）"
+    },
+    {
+      "decision": "协议零新增（P0/P1），复用NpcSyncState",
+      "reason": "NpcSyncState已有emotionState/reactType/fleeAttrFlags字段，大世界NPC复用即可"
+    },
+    {
+      "decision": "LOD在服务端控制tick频率，客户端控制动画精度",
+      "reason": "服务端降低远距离NPC的决策频率；客户端对Far级NPC禁用Animancer混合，直接Idle"
+    },
+    {
+      "decision": "BtTickSystem注册修复优先于情绪系统",
+      "reason": "BtTickSystem未注册导致AI管线不tick，是所有后续功能的基础阻塞项"
+    }
+  ],
+
+  "protocols": [
+    {
+      "name": "NpcSyncState（复用现有）",
+      "type": "ntf",
+      "description": "P0/P1阶段零协议新增，emotionState/reactType/fleeAttrFlags字段在现有结构中已存在",
+      "fields": []
+    },
+    {
+      "name": "BigWorldNpcTypeNtf（P1新增）",
+      "type": "ntf",
+      "description": "NPC类型变更通知（AOI进入时推送，用于客户端选择正确的组件集）",
+      "fields": [
+        {"name": "entity_id", "type": "uint64", "description": "NPC实体ID"},
+        {"name": "npc_type", "type": "int32", "description": "NPC类型枚举：0=Pedestrian,1=Vendor,2=Police,3=Animal"},
+        {"name": "lod_level", "type": "int32", "description": "初始LOD等级：0=Near,1=Mid,2=Far"}
+      ]
+    }
+  ],
+
+  "flows": {
+    "main": [
+      {
+        "name": "P0：日程驱动NPC移动",
+        "steps": [
+          "1. BtTickSystem每帧tick → V2Brain.Tick() 评估转换条件",
+          "2. V2Brain切换到SchedulePlan → PlanExecutor读取ScheduleComp.CurrentWaypoint",
+          "3. NpcMoveSystem路网A*寻路 → 写入NpcState.TargetPos",
+          "4. syncNpcMovement → NpcSyncState.NavigateProto 推送客户端",
+          "5. 客户端BigWorldNpcMoveComp接收路径 → 导航网格行走"
+        ]
+      },
+      {
+        "name": "P1：情绪触发与衰减",
+        "steps": [
+          "1. 外部事件（枪声/爆炸）→ BigWorldNpcEmotionSystem.OnEvent()",
+          "2. 计算受影响NPC（AOI范围+距离权重）→ 设置EmotionState + 强度moodLevel",
+          "3. BtTickSystem触发V2Brain → 情绪Plan优先级高于Schedule，切换到FleePlan",
+          "4. NpcSyncState推送emotionState+fleeAttrFlags到客户端",
+          "5. 客户端EmotionComp触发FSM → 进入FleeState/NervousState",
+          "6. 服务端BigWorldNpcEmotionSystem定时衰减moodLevel → 归零后回到SchedulePlan"
+        ]
+      }
+    ],
+    "exception": [
+      {
+        "name": "LOD切换时动画状态不一致",
+        "trigger": "玩家快速移动导致NPC在Far→Near瞬间切换",
+        "handling": "客户端收到LOD=Near时，强制ForceIdle()清除旧状态，重新同步服务端当前NpcState"
+      },
+      {
+        "name": "BtTickSystem重复注册",
+        "trigger": "场景重载或多实例",
+        "handling": "注册前检查是否已存在，幂等注册（已有则跳过）"
+      }
+    ]
+  },
+
+  "server_design": {
+    "summary": "详见 plan/server.json",
+    "new_components": ["BigWorldNpcBehaviorComp", "BigWorldNpcEmotionSystem"],
+    "reused_components": ["V2Brain", "ScheduleComp", "NpcMoveSystem", "PlanExecutor"],
+    "new_configs": ["bigworld_npc_brain.json（V2Brain配置）", "BigWorldNpcTypeCfg（配置表）"]
+  },
+
+  "client_design": {
+    "summary": "详见 plan/client.json",
+    "new_states": ["FleeState", "NervousState", "CuriousState", "AngryState", "InvestigateState"],
+    "new_comps": ["BigWorldNpcLodComp"],
+    "modified_comps": ["BigWorldNpcFsmComp（+5状态）", "BigWorldNpcEmotionComp（完整情绪同步）"],
+    "reused_comps": ["TownNpcFleeComp逻辑移植（不直接引用）"]
+  },
+
+  "testing": {
+    "summary": "详见 plan/testing.json",
+    "p0_smoke": ["BtTickSystem注册验证", "日程驱动NPC按路点移动", "V2Brain Plan切换日志"],
+    "p1_key": ["情绪触发→表现→衰减完整链路", "三级LOD tick频率验证", "50+NPC同帧性能基准"]
+  },
+
+  "file_list": [
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/system/bigworld/bttick_register.go", "action": "create", "side": "server", "description": "P0：大世界场景注册BtTickSystem，使AI管线正常tick"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/com/cnpc/bigworld_npc_behavior.go", "action": "create", "side": "server", "description": "P0：BigWorldNpcBehaviorComp — emotion/react/schedule字段（对应TownNpcComp子集）"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/res/npc_mgr/bigworld_npc_spawner.go", "action": "modify", "side": "server", "description": "P0：Spawn时初始化BigWorldNpcBehaviorComp，附加V2Brain到实体"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/com/cnpc/bigworld_npc.go", "action": "modify", "side": "server", "description": "P0：BigWorldSceneNpcExt扩展（如有必要加字段）"},
+    {"path": "P1GoServer/servers/scene_server/internal/ecs/system/bigworld/bigworld_npc_emotion.go", "action": "create", "side": "server", "description": "P1：情绪触发+衰减System（外部事件→设置emotionState→tick衰减→归零回SchedulePlan）"},
+    {"path": "P1GoServer/bin/config/bigworld_npc/bigworld_npc_brain.json", "action": "create", "side": "config", "description": "P0：V2Brain决策配置（Wander/ScheduleMove/Idle/FleePlan四个Plan，BigWorld专属），与bigworld_npc_spawn.json同目录"},
+    {"path": "freelifeclient/RawTables/BigWorldNpcTypeCfg.xlsx", "action": "create", "side": "config", "description": "P1：大世界NPC类型配置表（行人/商贩/警察，每类独立行为参数），配套打表"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/BigWorldNpcController.cs", "action": "modify", "side": "client", "description": "P1：OnInit中AddComp注册BigWorldNpcLodComp；接收npc_type初始化类型相关配置"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcFsmComp.cs", "action": "modify", "side": "client", "description": "P0：注册Flee/Nervous/Curious新状态；serverStateMap补Flee/Nervous/Curious/Angry映射"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcEmotionComp.cs", "action": "modify", "side": "client", "description": "P0/P1：完整情绪同步 — 接收服务端emotionState推送，触发FSM切换+AnimationComp情绪动画"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAnimationComp.cs", "action": "modify", "side": "client", "description": "P0/P1：Face层/AdditiveBody层支持情绪动画；LOD时禁用Animancer混合"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcMoveComp.cs", "action": "modify", "side": "client", "description": "P1：LOD=Far时跳过插值计算，直接设置Transform（降低CPU）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Managers/BigWorldNpcManager.cs", "action": "modify", "side": "client", "description": "P1：LOD分级逻辑增强 — 距离分档触发BigWorldNpcLodComp.SetLod()"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcFleeState.cs", "action": "create", "side": "client", "description": "P0：逃跑状态（高速跑动+方向远离威胁源）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcNervousState.cs", "action": "create", "side": "client", "description": "P0：紧张状态（慢步+频繁回头动画）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcCuriousState.cs", "action": "create", "side": "client", "description": "P0：好奇/围观状态（停步转向+注视动画）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/State/BigWorldNpcAngryState.cs", "action": "create", "side": "client", "description": "P1：愤怒状态（面部表情+肢体语言动画）"},
+    {"path": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcLodComp.cs", "action": "create", "side": "client", "description": "P1：LOD等级管理 — SetLod(0/1/2)控制动画精度+Update采样频率"}
+  ],
+
+  "constitution_check": {
+    "server": [
+      "✅ 禁止手动编辑生成代码 — 不涉及 orm/、common/proto/、common/config/cfg_*.go",
+      "✅ bin/config JSON合规 — npc_brain.json写入bin/config/bigworld_npc/，bin/config/下JSON（Schedule/*.json、npc_zone_quota.json等）均为手动维护的运行时行为配置，不走打表流程；cfg_*.bytes才是打表产物",
+      "✅ 错误显式处理 — 3个error_codes定义，所有失败路径有log",
+      "✅ 复用V2Brain — 不重复造轮子，YAGNI合规",
+      "✅ V2前缀/BigWorld前缀隔离 — BigWorld NPC配置与小镇完全隔离",
+      "✅ 日志规范 — 明确%v、npc_entity_id=、方括号模块标签"
+    ],
+    "client": [
+      "✅ 新Comp注册 Controller.OnInit — BigWorldNpcLodComp规划了注册步骤",
+      "✅ 日志禁止$\"\"插值，用+拼接（lesson-003）",
+      "✅ async方法带CancellationToken，OnClear中Cancel（feedback_unitask_cancellation）",
+      "✅ angle变量带Deg/Rad后缀（lesson-002）",
+      "✅ FSM OnExit必须Stop所有使用过的动画层（feedback_animation_layer_cleanup）",
+      "✅ Override OnRemove末尾调base.OnRemove()（lesson-008）",
+      "✅ Animancer共享层优先级保护 — 情绪>击中反应，_hasHighPriorityOverride标志位（lesson-007）",
+      "✅ LOD切换防残留 — SetLod()变化时ForceIdle()再切换，防TurnState残留"
+    ]
+  }
+}

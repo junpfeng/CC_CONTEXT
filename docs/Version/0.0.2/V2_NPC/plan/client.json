@@ -1,0 +1,294 @@
+{
+  "client_design": {
+    "overview": "客户端改动集中在完善已有的 BigWorldNpcController 组件体系（动画/移动/FSM）和扩展小地图 NPC 图例。BigWorldNpcController 与 TownNpcController 平级独立，不继承。使用 DataSignal 驱动，服务器权威，客户端仅表现和插值。",
+
+    "managers": [
+      {
+        "name": "BigWorldNpcManager",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Managers/BigWorldNpcManager.cs",
+        "action": "existing（需实现前验证 LOD，否则改为 modify）<!-- [迭代9修复] I2: 实现前通过 grep -r 'lodLevel\\|Full\\|Reduced\\|Minimal' Assets/Scripts/Gameplay/Modules/BigWorld/Managers/BigWorldNpcManager.cs 确认 LOD 分级逻辑是否已实现。若存在则 existing 无需修改；若不存在，action 改为 modify，补充实现：Full(<50m) 全量 Tick；Reduced(50-150m) AnimationComp 每 2 帧更新，FsmComp 停止 Tick；Minimal(>150m) 仅位置同步，AnimationComp/FsmComp 均停止。50 NPC 场景下跳过远距离 Tick 是手游性能约束的强制要求 --> <!-- [迭代13修复] C1: FsmComp 停止 Tick ≠ 停止消息处理。Reduced/Minimal LOD 期间 FsmComp 仍须响应 NpcPatrolNodeArriveNtf，将状态缓存到 _pendingBehaviorState（不驱动动画）。BigWorldNpcManager 在 LOD 切换为 Full 时调用 Controller.FsmComp.OnEnterFull()，消费缓存并强制对齐 FSM 和动画 -->",
+        "base_type": "BaseManager",
+        "responsibilities": [
+          "响应 DataManager.Npcs 增删事件驱动 NPC 生命周期",
+          "<!-- [迭代17修复] C2: PoolSize 从 20 改为 50（与服务端 NPC 预算对齐），消除对象池耗尽导致的永久不可见 NPC --> 对象池管理（PoolSize=50，每帧最多销毁 5 个）",
+          "LOD 三级管理（Full<50m / Reduced 50-150m / Minimal>150m，每秒重算）",
+          "<!-- [迭代13修复] C1 --> LOD 切换回调：每秒重算 LOD 后，若某 NPC 从非 Full 切回 Full，调用 Controller.FsmComp.OnEnterFull() 恢复缓存状态"
+        ],
+        "pool_management": {
+          "_comment_i2": "<!-- [迭代13修复] I2: 补充对象池耗尽时的 TryAcquireFromPool 实现逻辑 --> <!-- [迭代17修复] C2: PoolSize=50 与服务端预算对齐，池耗尽场景大幅缩小；补充最终兜底的 pendingResync 机制防止永久不可见 -->",
+          "method": "TryAcquireFromPool(newEntityId ulong) (controller *BigWorldNpcController, ok bool)",
+          "logic": "1. 若池中有空闲实例，直接取出返回 true；2. 若池已耗尽（所有 50 个实例均在使用中，PoolSize=50 已与服务端 50 NPC 预算对齐，正常场景不会到达此分支），对当前所有活跃 NPC 按到玩家位置的距离排序，取最远一个调用 Free() 释放回池后复用给新 NPC；3. Free() 计入当帧销毁计数，若当帧已销毁 5 个则本次不触发丢弃，将 newEntityId 记录到 _pendingResyncSet（HashSet<ulong>），返回 false；4. _pendingResyncSet 中的 entity_id 在下帧 TryAcquireFromPool 时优先处理（先消费 pendingResync 再处理新 NpcV2Info）；5. '最远'参考点为玩家主角 Transform.position（非相机位置）",
+          "pending_resync_note": "<!-- [迭代17修复] C2: pendingResync 机制防止永久不可见 --> <!-- [迭代19修复] N1: 明确 _pendingResyncSet 在断线重连时的清空时机 --> _pendingResyncSet 中记录的 entity_id 不会被丢弃，仅延迟到下帧有空余池位时处理；服务端因无法感知客户端池耗尽状态，不会主动重推 NpcV2Info，因此客户端必须保证最终创建所有 AOI 内 NPC 的 Controller。PoolSize=50 已覆盖服务端 50 NPC 预算，pendingResync 仅作为异常兜底。_pendingResyncSet 清空时机：BigWorldNpcManager.OnSceneUnload 或 HandleReconnect() 调用时整体清空，防止 stale entity_id 在重连后映射到复用的 Controller 实例",
+          "trigger_timing": "在 OnNpcV2Info 处理时调用，即收到服务端 NpcV2Info 消息、需要为该 NPC 创建/复用 Controller 时触发"
+        }
+      }
+    ],
+
+    "controllers": [
+      {
+        "name": "BigWorldNpcController",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/BigWorldNpcController.cs",
+        "action": "modify",
+        "changes": [
+          "确保 OnInit 中组件注册顺序完整：TransformComp → MoveComp → AppearanceComp → AnimationComp → FsmComp → EmotionComp",
+          "确保 OnClear 中所有组件正确清理（动画停止、引用释放、CancellationToken.Cancel）",
+          "<!-- [迭代19修复] I2: 新增 SetLODLevel 方法，提供 LOD 级别传递路径，否则 AnimationComp 无法感知 LOD 变化导致 Reduced LOD 下仍每帧全量更新 --> 新增 public void SetLODLevel(LODLevel level) 方法：根据 level 通知 AnimationComp 调整更新频率（Full=每帧，Reduced=每 2 帧跳帧，Minimal=停止 Tick），以及通知 FsmComp 是否停止 Tick。BigWorldNpcManager 在每秒 LOD 重算完成后，遍历所有 Controller 调用 SetLODLevel(newLevel)；若 newLevel 为 Full 且原来非 Full，额外调用 Controller.FsmComp.OnEnterFull() 消费缓存状态。LODLevel 枚举：Full=0，Reduced=1，Minimal=2"
+        ],
+        "_comment_i2_fix": "<!-- [迭代7修复] I2: 实现前必须确认 BigWorldNpcEmotionComp.cs 是否存在于 Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcEmotionComp.cs。若不存在，P0 阶段注释掉该行，P1 时添加 -->",
+        "component_registration_order": [
+          "AddComp<BigWorldNpcTransformComp>()",
+          "AddComp<BigWorldNpcMoveComp>()",
+          "AddComp<BigWorldNpcAppearanceComp>()",
+          "AddComp<BigWorldNpcAnimationComp>()",
+          "AddComp<BigWorldNpcFsmComp>()",
+          "// AddComp<BigWorldNpcEmotionComp>() — P1功能，实现前先确认文件是否存在；不存在则保持注释，避免编译错误"
+        ]
+      }
+    ],
+
+    "components": [
+      {
+        "name": "BigWorldNpcMoveComp",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcMoveComp.cs",
+        "action": "modify",
+        "description": "NPC 位置插值组件，使用 TransformSnapshotQueue 模式平滑移动",
+        "changes": [
+          {
+            "what": "完善 TransformSnapshotQueue 插值逻辑",
+            "how": "OnDataChanged 收到 MonsterTransformUpdate → 入队快照。Update 中按时间插值计算当前位置/朝向",
+            "reference": "参考 reference_npc_movement_pattern（TransformSnapshotQueue 插值模式）"
+          },
+          {
+            "what": "暴露 CurrentSpeed 属性",
+            "how": "根据帧间位移计算实时速度：CurrentSpeed = Vector3.Distance(prevPos, curPos) / deltaTime",
+            "usage": "AnimationComp 读取此值驱动动画混合"
+          },
+          {
+            "what": "<!-- [迭代17修复] I1: 暴露 OnMoveModeChanged 事件，供 FsmComp 在 Reduced/Minimal LOD 下订阅，保证 Move↔Idle 状态转换不依赖 FsmComp Tick --> 新增 OnMoveModeChanged 事件",
+            "how": "MoveComp 新增 public event Action<MoveMode> OnMoveModeChanged；在 MoveMode 枚举值发生变化时触发（Idle→Walk/Run 或 Walk/Run→Idle），与 _moveMode 字段赋值同步。FsmComp.OnInit 中订阅此事件，OnClear 中取消订阅（事件配对原则）",
+            "why": "Reduced/Minimal LOD 下 FsmComp 停止 Tick，无法主动检测 MoveMode 变化；若 MonsterTransformUpdate 将 NPC 状态更新为 Idle，MoveComp 内部状态已变但 FsmComp 无感知，动画卡在 Walk。事件驱动替代 Tick 轮询，在 LOD 降级时保留最低限度的状态同步能力"
+          },
+          {
+            "what": "MoveMode 枚举完善",
+            "how": "根据 CurrentSpeed 判断：0=Idle / <RunSpeedThreshold=Walk / >=RunSpeedThreshold=Run",
+            "threshold": "RunSpeedThreshold = 2.5f（已有常量）"
+          }
+        ],
+        "key_fields": [
+          "_snapshotQueue: TransformSnapshotQueue — 位置快照缓冲队列",
+          "_currentSpeed: float — 实时速度",
+          "_moveMode: MoveMode — 当前移动模式（Idle/Walk/Run）",
+          "_prevPosition: Vector3 — 上一帧位置（用于速度计算）"
+        ]
+      },
+      {
+        "name": "BigWorldNpcAnimationComp",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAnimationComp.cs",
+        "action": "modify",
+        "description": "NPC 动画组件，使用 Animancer 驱动 Idle/Walk/Run 动画切换",
+        "changes": [
+          {
+            "what": "速度驱动动画混合",
+            "how": "Update 中读取 MoveComp.CurrentSpeed → 映射到动画参数。Idle(speed≈0) / Walk(speed<2.5) / Run(speed>=2.5)",
+            "note": "使用 Animancer ClipTransition，确保 FBX clip isLooping=true（lesson-004: anim_clip_loop_check）"
+          },
+          {
+            "what": "动画过渡参数",
+            "how": "crossFadeDuration = 0.2f，确保过渡平滑无跳帧"
+          },
+          {
+            "_comment_i5": "<!-- [迭代13修复] I5: 帧守卫改为时间窗口守卫，消除帧率耦合 -->",
+            "what": "动画切换时间守卫",
+            "how": "Update 中检测到速度档位变化时，启动 _animSwitchGuardTimer += deltaTime；仅当 _animSwitchGuardTimer >= guardDuration（0.08f）后才执行实际动画切换（调用 AnimancerComponent.Play），并重置计时器。速度未持续超阈值则重置计时器，不切换。目标平台手机端（15-60fps）行为一致",
+            "why": "原 3帧守卫在 60fps=50ms、30fps=100ms、15fps=200ms，低配手机动画迟滞感明显"
+          },
+          {
+            "what": "动画归一化速度",
+            "how": "animSpeed = CurrentSpeed / refSpeed。refSpeed 需匹配动画实际移速（lesson: anim_speed_normalization）",
+            "refSpeed_walk": "1.2 m/s（Walk 动画参考速度）",
+            "refSpeed_run": "4.0 m/s（Run 动画参考速度）"
+          }
+        ],
+        "key_fields": [
+          "_animancer: AnimancerComponent — Animancer 动画组件引用",
+          "_idleClip: ClipTransition — 待机动画",
+          "_walkClip: ClipTransition — 行走动画",
+          "_runClip: ClipTransition — 奔跑动画",
+          "_currentClip: AnimancerState — 当前播放状态",
+          "<!-- [迭代13修复] I5 --> _animSwitchGuardTimer: float — 时间窗口守卫计时器，替代帧数守卫；连续 guardDuration=0.08f（80ms）内速度持续超阈值才执行动画切换，消除帧率差异（60fps≈5帧，30fps≈2帧，15fps≈1帧，行为一致）"
+        ],
+        "lesson_compliance": [
+          "lesson-003: 日志用 + 拼接，不用 $\"\"",
+          "lesson-002: 不涉及角度变量（动画由速度驱动）",
+          "feedback_anim_clip_loop_check: 播放前检查 clip.isLooping",
+          "feedback_anim_speed_normalization: refSpeed 匹配实际移速"
+        ]
+      },
+      {
+        "name": "BigWorldNpcFsmComp",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcFsmComp.cs",
+        "action": "modify",
+        "description": "NPC 3 态有限状态机（Idle/Move/Turn），由 MoveComp.MoveMode 驱动切换",
+        "_comment_i6": "<!-- [迭代19修复] I6: 明确动画职责分工。AnimationComp.Update 是动画唯一驱动者，FSM 状态的 Enter/Exit 禁止直接调用 AnimancerComponent.Play，只维护自身状态标记，由 AnimationComp 在其 Update 中读取 MoveComp.CurrentSpeed 和 FsmComp 状态决定播放哪个 clip。此规则防止 FSM 和 AnimationComp 双路径覆盖（尤其 Reduced LOD 时 FSM 停 Tick 但 AnimationComp 继续更新） -->",
+        "states": [
+          {
+            "name": "BigWorldNpcIdleState",
+            "enter": "<!-- [迭代19修复] I6 --> 不直接调用 AnimancerComponent.Play，仅标记 FSM 状态为 Idle（AnimationComp.Update 下一帧检测到 MoveComp.CurrentSpeed≈0 时自动切换 Idle 动画）",
+            "tick": "检测 MoveMode != Idle → 切换到 MoveState",
+            "exit": "无特殊清理"
+          },
+          {
+            "name": "BigWorldNpcMoveState",
+            "enter": "<!-- [迭代19修复] I6 --> 不直接调用 AnimancerComponent.Play，仅标记 FSM 状态为 Move（AnimationComp.Update 根据 MoveComp.CurrentSpeed 自动切换 Walk/Run 动画）",
+            "tick": "检测 MoveMode == Idle → 切换到 IdleState",
+            "exit": "无特殊清理"
+          },
+          {
+            "name": "BigWorldNpcTurnState",
+            "enter": "<!-- [迭代19修复] I6 --> 转身动画若有独立 clip，仍通过 AnimationComp 驱动（FsmComp 通知 AnimationComp 进入 Turn 模式）；不直接调用 AnimancerComponent.Play",
+            "tick": "朝向插值完成 → 切换回 IdleState 或 MoveState",
+            "exit": "无特殊清理"
+          }
+        ],
+        "lod_message_handling": {
+          "_comment_c1": "<!-- [迭代13修复] C1: 定义非 Full LOD 时的消息处理和状态恢复机制 -->",
+          "reduced_minimal_behavior": "<!-- [迭代17修复] I1: 补充 Reduced/Minimal LOD 下 Move↔Idle 状态转换路径，解决 FsmComp 停 Tick 后动画卡 Walk 问题 --> FsmComp 停止 Tick（不主动轮询 FSM 状态机），但保留两条事件响应路径：① MoveComp.OnMoveModeChanged 事件回调（FsmComp.OnInit 订阅，OnClear 取消）— 当服务端推送 MonsterTransformUpdate 使 MoveComp 的 MoveMode 变化时，FsmComp 通过此回调同步切换自身状态（IdleState↔MoveState），不依赖 Tick；② OnPatrolNodeArrive 方法仍可被消息路由层调用，将最新状态存入 _pendingBehaviorState，不驱动动画",
+          "pending_fields": [
+            "_pendingBehaviorType: int — 非 Full LOD 期间收到的最新 behaviorType（0=无挂起）",
+            "_pendingDurationMs: int — 挂起的原始停留时长（接收时的完整 duration，非剩余值）",
+            "_pendingNodePosition: Vector3 — 挂起的节点位置",
+            "_hasPendingBehavior: bool — 是否有待消费的缓存状态",
+            "<!-- [迭代19修复] I4: 新增时间戳字段，用于 OnEnterFull 时计算剩余停留时长，防止 LOD 降级期间已流逝时间被重复计算 --> _pendingReceivedTime: float — 收到 NpcPatrolNodeArriveNtf 时的 Time.unscaledTime（OnPatrolNodeArrive 被调用时记录）"
+          ],
+          "on_enter_full": {
+            "method": "public void OnEnterFull()",
+            "called_by": "BigWorldNpcManager LOD 切换检测（Full → 非Full 切换不调用）",
+            "logic": "<!-- [迭代19修复] I4: 消费 pending 状态时扣除 LOD 降级期间已流逝时间，防止重启完整倒计时 --> if (_hasPendingBehavior) { int remainMs = _pendingDurationMs - (int)((Time.unscaledTime - _pendingReceivedTime) * 1000); if (remainMs > 0) { OnPatrolNodeArrive(_pendingBehaviorType, remainMs, _pendingNodePosition); } else { 直接对齐当前移动状态（MoveComp.CurrentSpeed 决定 Idle/Move），不启动 PatrolBehaviorState（duration 已超时）; } _hasPendingBehavior = false; } else { 根据 MoveComp.CurrentSpeed 强制对齐当前 FSM 状态（ForceSetState）和动画 }"
+          }
+        },
+        "patrol_behavior_extension": {
+          "description": "P1: 收到 NpcPatrolNodeArriveNtf 时临时切换到 PatrolBehaviorState",
+          "state": "BigWorldNpcPatrolBehaviorState",
+          "enter": "根据 behaviorType 播放对应动画（驻足/观景/休息）",
+          "tick": "duration 倒计时到期 → 切换回 IdleState/MoveState",
+          "exit": "停止行为动画层",
+          "_comment_c1": "<!-- [迭代3修复] C1: 新增 OnPatrolNodeArrive 方法，由修改后的 NpcPatrolNodeArriveNtf.cs 消息处理器调用 -->",
+          "entry_method": {
+            "name": "OnPatrolNodeArrive",
+            "_comment_i5": "<!-- [迭代9修复] I5: node_position 采用方案①（消费）：进入 PatrolBehaviorState 时调用 MoveComp.SnapToPosition 清空快照队列锁定位置，防止高延迟下服务端停止推 MonsterTransformUpdate 后客户端仍在插值历史快照导致位置漂移 -->",
+            "signature": "public void OnPatrolNodeArrive(int behaviorType, int durationMs, Vector3 nodePosition)",
+            "logic": "behaviorType>0 时：先调用 MoveComp.SnapToPosition(nodePosition)（清空 TransformSnapshotQueue，将 NPC 锁定到服务端确认位置），再切换到 PatrolBehaviorState，设置 duration 倒计时；behaviorType==0 时忽略（duration=0 不停留，无需锁定位置）",
+            "snap_to_position_spec": "MoveComp.SnapToPosition(pos) 清空队列中所有历史快照，直接设置 transform.position = pos，下一帧起重新累积快照"
+          }
+        }
+      },
+      {
+        "_comment_c1": "<!-- [迭代3修复] C1: 新增 NpcPatrolNodeArriveNtf.cs 消息路由修改设计 -->",
+        "name": "NpcPatrolNodeArriveNtf（消息处理器修改）",
+        "file": "Assets/Scripts/Gameplay/Managers/Net/Message/NpcPatrolNodeArriveNtf.cs",
+        "action": "modify",
+        "description": "修改消息路由：先 TownNpcManager.TryQuery → miss 后 fallback BigWorldNpcManager.TryQuery",
+        "changes": [
+          {
+            "what": "增加 BigWorld NPC 路由 fallback",
+            "how": "在现有 TownNpcManager.TryQuery 失败后，增加 BigWorldNpcManager.TryQuery((ulong)request.NpcId, out var bwController)。命中后调用 bwController.FsmComp.OnPatrolNodeArrive(request.BehaviorType, request.DurationMs, request.NodePosition.ToUnityVector3()) <!-- [迭代9修复] I5: 透传 node_position 字段，供 FsmComp 执行位置校准 -->",
+            "why": "现有处理器只路由到 TownNpcManager，大世界 NPC 永远收不到巡逻节点通知（C1 修复）"
+          }
+        ]
+      },
+      {
+        "name": "BigWorldNpcAppearanceComp",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcAppearanceComp.cs",
+        "action": "modify",
+        "description": "<!-- [迭代17修复] I4: 补充 part_list 语义和加载逻辑，实现者必须明确如何组合 appearance_id + part_list --> 外观异步加载组件。appearance_id 指定 NPC 基础模型（身体网格 Prefab 路径 key）；part_list 为可选的外观部件 ID 列表，P0 阶段定义为：part_list[0]=服装 ID（clothing_id），part_list[1]=发型 ID（hair_id），若 part_list 为空则使用基础模型默认服装和发型",
+        "part_list_loading": {
+          "semantic": "part_list 中每个 int32 对应外观配置表（appearance_part_config）中的一条记录，字段含义：[0]=clothing_id，[1]=hair_id，后续可扩展（accessories 等）；P0 阶段若 part_list 为空或长度不足，对应部位使用 appearance_id 指向的基础配置中的默认值",
+          "load_flow": "<!-- [迭代17修复] I4 --> <!-- [迭代19修复] C2: 加载完成时使用 MoveComp.CurrentPosition 而非 npcV2Info.position。npcV2Info.position 是创建时的初始坐标，加载期间（0.5-2s）NPC 已被 MonsterTransformUpdate 驱动移动，使用初始坐标会导致模型加载完成后瞬移回旧位置（体验严重劣化） --> LoadAsync(NpcV2Info info)：① 使用 appearance_id 加载基础 Prefab（已有逻辑）；② 若 part_list.Count > 0，遍历 part_list，从 appearance_part_config 查找各部件资源地址，使用 YooAsset 异步加载子资源并挂接到基础模型（替换对应 SkinnedMeshRenderer）；③ 加载期间服务端持续推送 MonsterTransformUpdate，TransformSnapshotQueue 正常积累；加载完成时调用 MoveComp.SnapToPosition(MoveComp.CurrentPosition)（使用当前实时插值位置，确保模型出现在 NPC 当前所在位置），不得使用 npcV2Info.position",
+          "empty_part_list_note": "part_list 为空时跳过子资源加载，无额外开销。P0 阶段服务端可能填充空 part_list，此处必须做空值容错"
+        }
+      },
+      {
+        "name": "BigWorldNpcEmotionComp",
+        "file": "Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/Comp/BigWorldNpcEmotionComp.cs",
+        "action": "existing（P1 完善）",
+        "description": "情绪表达组件，P1 阶段接入 NpcEmotionChangeNtf 驱动表情/特效"
+      }
+    ],
+
+    "ui_panels": [
+      {
+        "name": "MapPanel / MapLegendControl 扩展",
+        "files": [
+          "Assets/Scripts/Gameplay/Modules/UI/Managers/Map/TagInfo/MapLegendControl.cs",
+          "Assets/Scripts/Gameplay/Modules/UI/Managers/Map/TagInfo/MapBigWorldNpcLegend.cs（新增）"
+        ],
+        "changes": [
+          {
+            "what": "新增 BigWorldNpcLegendTypeId = 14 常量 <!-- [迭代3修复] I3: 与 MapLegendType 枚举对齐 -->",
+            "file": "MapLegendControl.cs"
+          },
+          {
+            "what": "新增 ToggleShowAllBigWorldNpc() 方法",
+            "file": "MapLegendControl.cs",
+            "logic": "Toggle 状态切换 → on 时遍历 DataManager.Npcs 添加图例 / off 时清除所有 NPC 图例"
+          },
+          {
+            "what": "新增 MapBigWorldNpcLegend 数据类",
+            "file": "MapBigWorldNpcLegend.cs",
+            "description": "继承 MapLegendBase，实现大世界 NPC 图例数据。统一人形图标，浅蓝色，edgeDisplay=0（不显示边缘指示器）"
+          },
+          {
+            "what": "事件订阅",
+            "logic": "订阅 NPC 创建/销毁事件 → Toggle on 时自动增删图例。OnClose 中取消订阅（事件配对原则）"
+          },
+          {
+            "what": "场景过滤",
+            "logic": "OnOpen 时检查 CitySceneInfo.IsBigWorld → 非大世界场景隐藏按钮"
+          }
+        ]
+      }
+    ],
+
+    "config_changes": [
+      {
+        "file": "freelifeclient/RawTables/icon.xlsx",
+        "sheet": "LegendType_c",
+        "action": "新增行：ID=14, Name=BigWorldNpc, Icon=icon_npc_common, Color=#87CEEB(浅蓝), EdgeDisplay=0",
+        "_comment_i3": "<!-- [迭代3修复] I3: ID 改为 14（顺序递增），避免 127 跳跃 ID 增加维护负担。LegendType 由 icon.xlsx 配置驱动（运行时按 ID 查表），C# 侧 MapLegendType 枚举需同步新增 BigWorldNpc=14 -->",
+        "note": "确认 ID=14 不与现有条目冲突（当前枚举最大=Animal=13）"
+      },
+      {
+        "_comment_i3": "<!-- [迭代3修复] I3: 补充 MapLegendType 枚举修改 -->",
+        "file": "freelifeclient/Assets/Scripts/Gameplay/Modules/UI/Managers/Map/TagInfo/MapLegendBase.cs",
+        "action": "modify",
+        "description": "MapLegendType 枚举新增 BigWorldNpc = 14"
+      }
+    ],
+
+    "state_management": {
+      "data_flow": "服务端 NpcV2Info/MonsterTransformUpdate → Protobuf 解码 → DataManager.Npcs(NpcData) → DataSignal → Controller/Comp 响应",
+      "position_interpolation": "TransformSnapshotQueue 缓冲 2-3 帧快照，线性插值平滑移动，吸收网络抖动",
+      "animation_drive": "MoveComp.CurrentSpeed(float) → AnimationComp.Update() 读取 → Animancer 切换 Idle/Walk/Run",
+      "lod_strategy": "BigWorldNpcManager 每秒重算 LOD：Full(<50m) 全动画 / Reduced(50-150m) 简化更新 / Minimal(>150m) 仅位置"
+    },
+
+    "error_handling": {
+      "network_delay": "TransformSnapshotQueue 缓冲吸收 2-3 帧延迟，无快照时保持最后位置",
+      "pool_exhaustion": "<!-- [迭代3修复] I7: 补充排队队列上限和丢弃策略 --> <!-- [迭代17修复] C2: PoolSize=50 与服务端预算对齐，消除原设计中'丢弃最远 NPC 请求'导致的永久不可见问题 --> 对象池（PoolSize=50）正常不会耗尽；若耗尽，新 NPC entity_id 进入 _pendingResyncSet，下帧优先消费，不永久丢弃。原'队列上限 10 超出则丢弃'策略已废弃——丢弃会导致服务端持续推送客户端永远忽略的消息，形成不可恢复的状态撕裂。LOD Minimal 层加速回收远处 NPC，确保池位及时释放。服务端 per-player AOI 推送由 syncNpcMovement 的 15 NPC/frame 节流天然限制",
+      "appearance_load_fail": "外观资源加载失败 → 使用默认占位模型，MLog.Warning 记录",
+      "npc_cleanup": "<!-- [迭代9修复] I4: 明确 OnClear 执行序列 --> <!-- [迭代19修复] I3: 明确 OnClear 为 void（父类 BaseController 约束），不可 await，UnloadAsync 必须 .Forget() --> BigWorldNpcController.OnClear 签名为 override void OnClear()（父类 BaseController.OnClear 为 void，对象池框架调用，无法改为 async）。执行序列：1) _behaviorCts.Cancel()（取消行为/移动任务）；2) AppearanceComp.UnloadAsync(_unloadCts.Token).Forget()——AppearanceComp 持有独立 _unloadCts，OnClear 先 _unloadCts.Cancel()（中止旧卸载）再 new CancellationTokenSource()（生成新 token）后触发 UnloadAsync(.Forget())，通过取消令牌隔离保证不误操作复用后实例；3) 所有 Comp.OnClear 调用；4) 动画停止（AnimancerComponent.Stop）；5) 引用置 null；6) 回收到对象池（ObjectPoolUtility.Instance.Free，非 Destroy）。核心原则：_behaviorCts 取消行为，AppearanceComp._unloadCts 独立管理卸载，两者生命周期不相交；OnClear 不 await 但通过 CancellationToken 保证不同生命周期的 UnloadAsync 互不干扰"
+    },
+
+    "coding_standards_compliance": [
+      "使用 MLog 日志（非 Debug.Log）",
+      "使用 UniTask 异步（非 System.Threading.Tasks）",
+      "async UniTaskVoid 必须带 CancellationToken（lesson: unitask_cancellation）",
+      "日志禁止 $\"\" 插值，用 + 拼接（lesson-003）",
+      "私有字段 _camelCase，方法 PascalCase",
+      "using FL.NetModule 时加 Vector3 alias（feedback: netmodule_using_alias）",
+      "事件订阅/取消成对出现",
+      "对象池回收用 ObjectPoolUtility.Instance.Free，不用 Destroy",
+      "新增 .cs 文件显式添加 using UnityEngine（防 CS0104 歧义）"
+    ]
+  }
+}

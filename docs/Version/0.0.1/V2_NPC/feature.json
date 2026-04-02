@@ -1,0 +1,257 @@
+{
+  "name": "大世界V2 NPC系统",
+  "overview": "基于小镇V2 NPC的正交维度Pipeline架构，在大世界场景实现一套完整且解耦的NPC系统。大世界NPC拥有独立的行为决策、移动导航、情绪表达、日程调度等子系统，与小镇NPC共享核心框架（Pipeline、Handler、V2Brain）但在配置、扩展处理器、生成策略上完全独立，确保两套系统互不影响。",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "category": "架构",
+      "title": "大世界V2 Pipeline注册与工厂",
+      "description": "在V2 Pipeline工厂中新增大世界场景类型（BigWorld），注册独立的维度配置（engagement/expression/locomotion/navigation）。大世界Pipeline配置与Town/Sakura完全隔离，通过sceneType区分。复用orthogonal_pipeline核心框架，不修改Pipeline引擎本身。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "v2_pipeline_factory.go中存在BigWorld场景类型的RegisterV2Pipeline调用",
+        "BigWorld维度配置独立于Town/Sakura/Animal，修改BigWorld配置不影响其他场景",
+        "SetupV2Pipeline传入BigWorld sceneType时能正确创建Pipeline实例"
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "category": "架构",
+      "title": "大世界NPC扩展处理器（ExtHandler）",
+      "description": "新增bigworld_ext_handler.go，实现大世界专属的NPC扩展处理器。该处理器负责大世界NPC的创建初始化、销毁清理、感知插件注入等。与town_ext_handler.go平级，互不依赖。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "存在独立的bigworld_ext_handler.go文件",
+        "BigWorld ExtHandler不import Town/Sakura的任何扩展处理器代码",
+        "NPC创建时根据场景类型自动选择正确的ExtHandler"
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "category": "核心玩法",
+      "title": "大世界NPC生成与AOI管理",
+      "description": "大世界NPC通过服务器AOI系统动态生成和销毁，而非小镇的静态场景放置。服务器根据玩家视野范围动态创建/回收NPC实体，通过现有的NetEntity协议同步给客户端。需支持NPC密度配置和最大数量上限。",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "NPC在玩家进入AOI范围时自动创建并同步到客户端",
+        "NPC在离开AOI范围后被正确回收，不泄漏内存",
+        "可通过配置控制大世界NPC的最大数量和生成密度",
+        "NPC生成不造成帧率突刺（分帧创建）"
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "category": "核心玩法",
+      "title": "大世界NPC行为决策（V2Brain）",
+      "description": "大世界NPC使用V2Brain决策系统，支持四个正交维度：engagement（警戒/战斗）、expression（情绪表达）、locomotion（移动模式）、navigation（导航执行）。每个维度独立决策，通过NpcState桥接到执行层。决策配置（转换条件、优先级）独立于小镇。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "大世界NPC四个维度独立运行，修改一个维度不影响其他维度",
+        "V2Brain决策配置使用BigWorld专属参数，与Town配置分离",
+        "维度执行顺序正确：engagement/expression（写入者）优先于locomotion/navigation（读取者）"
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "category": "核心玩法",
+      "title": "大世界NPC移动与导航",
+      "description": "大世界NPC支持在大世界地图上移动导航。使用大世界路网（50K路点/295路口）进行A*寻路，结合NavMesh做局部避障。移动数据通过NpcState.Movement写入NpcMoveComp，由syncNpcMovement桥接执行。需处理大世界Y坐标修正（Grounds层Raycast）。",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "NPC能沿大世界路网正确寻路移动",
+        "NPC移动时Y坐标通过Grounds层Raycast修正，不出现浮空或穿地",
+        "客户端NPC移动平滑，使用TransformSnapshotQueue插值",
+        "寻路耗时不超过3ms（利用现有LRU缓存）"
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "category": "核心玩法",
+      "title": "大世界NPC日程系统",
+      "description": "大世界NPC拥有独立的日程调度系统，控制NPC在不同时段的行为（巡逻、休息、聚集等）。日程配置使用V2前缀标识，与小镇日程完全隔离。日程状态通过ScheduleSensor感知，驱动V2Brain维度切换。",
+      "priority": "P1",
+      "side": "server",
+      "acceptance_criteria": [
+        "大世界NPC日程配置以V2_BigWorld前缀标识，与Town日程不冲突",
+        "NPC根据游戏内时间自动切换日程行为",
+        "日程切换不产生NPC瞬移或状态异常"
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "category": "核心玩法",
+      "title": "大世界NPC情绪系统",
+      "description": "大世界NPC接入V2情绪系统（EmotionState），支持情绪衰减/恢复机制。情绪状态通过expression维度驱动表情动画和反应行为。复用emotion.Default.Tick核心逻辑，但大世界可配置独立的情绪参数（衰减速率、触发阈值等）。",
+      "priority": "P1",
+      "side": "both",
+      "acceptance_criteria": [
+        "大世界NPC能根据环境事件产生情绪变化",
+        "情绪状态正确同步到客户端并驱动表情动画",
+        "情绪参数可独立于小镇配置"
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "category": "网络同步",
+      "title": "大世界NPC状态同步",
+      "description": "大世界NPC的AnimState、MovementState、EmotionState等通过现有的NpcDataUpdate协议同步到客户端。复用AnimStateComp→协议枚举映射（syncNpcStateToAnimComp），不新增协议消息。客户端通过NpcData的observable模式触发UI和动画更新。",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "NPC状态变化在200ms内同步到客户端",
+        "不新增Proto协议消息，复用现有NpcDataUpdate/NpcV2Info",
+        "客户端收到状态更新后正确触发动画和表现切换"
+      ]
+    },
+    {
+      "id": "REQ-009",
+      "category": "架构",
+      "title": "客户端大世界NPC Controller重构",
+      "description": "重构客户端NpcController（当前继承MonsterController且几乎为空），使其具备独立的组件体系。参照TownNpcController的组件模式（FsmComp、AnimationComp、TransformComp等），但组件集合根据大世界需求裁剪。与TownNpcController不共享基类，通过接口复用公共行为。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "BigWorldNpcController拥有独立的组件注册和生命周期管理",
+        "不继承或依赖TownNpcController的任何具体实现",
+        "组件通过AddComp在OnInit中注册，OnClear中正确清理"
+      ]
+    },
+    {
+      "id": "REQ-010",
+      "category": "核心玩法",
+      "title": "客户端大世界NPC动画系统",
+      "description": "大世界NPC使用Animancer多层动画系统，支持基本动作（Idle、Walk、Run、Turn）和情绪反应动画。参照TownNpcAnimationComp的分层架构（UpperBody、Arms、AdditiveBody、Face），但可根据大世界NPC复杂度裁剪层数。动画clip必须检查isLooping设置。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "大世界NPC支持Idle/Walk/Run/Turn基本动画状态切换",
+        "动画播放平滑无跳变，速度与移速归一化匹配",
+        "HiZCulling生效时暂停Animancer图，恢复后无异常"
+      ]
+    },
+    {
+      "id": "REQ-011",
+      "category": "核心玩法",
+      "title": "客户端大世界NPC状态机",
+      "description": "大世界NPC客户端实现轻量级FSM，覆盖基本行为状态：Idle、Move、Run、Turn。后续可按需扩展Combat、Flee等状态。FSM状态由服务器同步的AnimState驱动，不做客户端独立决策。每个State的OnExit必须清理所有使用过的动画层。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "FSM状态切换由服务器状态驱动，客户端不做自主决策",
+        "状态切换时无动画残留或资源泄漏",
+        "FSM与TownNpcFsmComp独立，不共享状态枚举"
+      ]
+    },
+    {
+      "id": "REQ-012",
+      "category": "性能",
+      "title": "大世界NPC性能优化",
+      "description": "大世界NPC需满足手游性能预算。服务器端：Pipeline Tick限制在合理时间内，支持AI LOD（远处NPC降低Tick频率）。客户端端：对象池预热、分帧创建、HiZCulling视野裁剪、远距离NPC降低动画更新频率。",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "50个大世界NPC同时存在时服务器帧率不低于30fps",
+        "客户端同屏20个NPC时不造成明显卡顿（>25fps）",
+        "NPC对象池支持预热，减少运行时实例化开销",
+        "超出视距的NPC暂停动画更新和渲染"
+      ]
+    },
+    {
+      "id": "REQ-013",
+      "category": "架构",
+      "title": "大世界与小镇NPC代码解耦",
+      "description": "大世界NPC系统在代码层面与小镇NPC完全解耦。服务器端：BigWorld ExtHandler/Pipeline配置独立文件，不import town_ext_handler；共享的核心框架（Pipeline引擎、Handler基类、V2Brain）放在common层。客户端端：BigWorld NPC代码放在BigWorld模块目录下，不引用S1Town模块的类型。",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": [
+        "删除小镇NPC代码后大世界NPC编译不受影响（反之亦然）",
+        "两套系统无循环依赖",
+        "共享框架代码在common/ai层，场景特化代码在各自目录"
+      ]
+    },
+    {
+      "id": "REQ-014",
+      "category": "核心玩法",
+      "title": "大世界NPC外观多样化",
+      "description": "大世界NPC支持外观多样化，通过BodyPartsMap配置不同的头发、服装、配饰等。服务器下发AvatarPartList，客户端根据配置加载对应Prefab部件。复用现有的角色自定义系统，但大世界NPC的外观配置池独立于小镇。",
+      "priority": "P1",
+      "side": "both",
+      "acceptance_criteria": [
+        "大世界NPC外观可根据配置呈现差异化",
+        "外观加载不阻塞NPC创建流程（异步加载）",
+        "外观配置池可独立扩展，不影响小镇NPC外观"
+      ]
+    },
+    {
+      "id": "REQ-015",
+      "category": "核心玩法",
+      "title": "大世界NPC感知系统",
+      "description": "大世界NPC接入感知系统（Sensor Plugins），包括StateSensor、EventSensor、DistanceSensor等。感知插件在BigWorld ExtHandler中注入，感知参数（检测距离、事件类型）使用大世界专属配置。感知结果写入NpcState.Perception，供V2Brain决策使用。",
+      "priority": "P0",
+      "side": "server",
+      "acceptance_criteria": [
+        "大世界NPC能感知周围玩家和事件",
+        "感知参数可通过配置调整，不需要改代码",
+        "感知插件列表与小镇NPC独立配置"
+      ]
+    }
+  ],
+  "interaction_design": {
+    "description": "大世界NPC是环境中的自主角色，玩家在大世界探索时自然遇到。NPC根据日程和环境自主行动，对玩家的靠近、攻击等行为做出反应。玩家无需特殊操作即可观察NPC的日常行为，交互方式与小镇NPC一致但场景更开阔。",
+    "controls": [
+      "玩家靠近NPC时NPC产生感知反应（注视、转向）",
+      "NPC被攻击时根据类型进入战斗或逃跑状态",
+      "NPC在大世界路网上自主巡逻移动"
+    ],
+    "flows": [
+      "玩家进入大世界→服务器在AOI范围内生成NPC→客户端接收并渲染NPC→NPC按日程自主行动",
+      "玩家靠近NPC→NPC感知到玩家→expression维度触发注视/转向反应",
+      "NPC被攻击→engagement维度切换战斗/逃跑→locomotion维度调整移动模式→客户端播放对应动画"
+    ]
+  },
+  "technical_constraints": [
+    {
+      "category": "性能",
+      "description": "手机端单帧NPC Pipeline Tick总耗时不超过2ms（服务器），客户端同屏NPC上限20个，超出视距NPC暂停动画和渲染"
+    },
+    {
+      "category": "网络",
+      "description": "不新增Proto协议消息，复用现有NpcDataUpdate/NpcV2Info结构体。NPC状态同步走AOI广播，带宽增量可控"
+    },
+    {
+      "category": "架构",
+      "description": "大世界NPC与小镇NPC必须代码级解耦：共享核心框架（Pipeline引擎、Handler基类、V2Brain）放common层，场景特化代码放各自目录，禁止交叉import"
+    },
+    {
+      "category": "架构",
+      "description": "服务器权威：NPC行为决策、状态管理全部在服务器端，客户端仅负责表现（动画、渲染）和输入预测"
+    },
+    {
+      "category": "资源",
+      "description": "大世界NPC Prefab复用现有角色资源系统（BodyPartsMap），不额外增加美术资产包体。NPC对象池预热减少运行时GC"
+    }
+  ],
+  "dependencies": [
+    "V2 Pipeline核心框架（orthogonal_pipeline.go、plan_executor.go、v2brain_decision.go）— 共享复用",
+    "大世界路网系统（50K路点/295路口）— NPC导航依赖",
+    "大世界AOI系统（NetEntityManager）— NPC生成/回收依赖",
+    "现有NpcDataUpdate/NpcV2Info协议 — NPC状态同步依赖",
+    "Animancer动画系统 — 客户端NPC动画依赖",
+    "HiZCulling系统 — 客户端NPC视野裁剪依赖",
+    "BodyPartsMap角色自定义系统 — NPC外观多样化依赖",
+    "大世界交通系统 — NPC需与载具共享路网，避免碰撞冲突"
+  ],
+  "notes": [
+    "[待确认] 大世界NPC最大同时存在数量上限（建议服务器50，客户端同屏20）",
+    "[待确认] 大世界NPC是否需要支持载具驾驶（MovementMode.Drive），还是仅步行",
+    "[待确认] 大世界NPC是否需要警察等特殊职业角色，还是仅普通市民",
+    "[待确认] 大世界NPC日程复杂度：是否需要完整的一日周期，还是简化为巡逻/休息两种状态",
+    "[待确认] 大世界NPC与动物系统的交互关系（是否共享Spawner或独立管理）",
+    "[待确认] 大世界NPC是否需要对话交互功能，还是仅作为环境角色"
+  ]
+}

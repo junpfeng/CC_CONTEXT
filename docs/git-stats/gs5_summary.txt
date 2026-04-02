@@ -1,0 +1,11 @@
+Report written to E:\workspace\PRJ\P1\docs\git-stats\git-stats-2026-03-30.md
+Total commits: 214, Total authors: 16
+
+=== Top 3 Summary ===
+
+D1 commits: xiaoyin(53), miaoriofeng(36), RuiXiao(25)
+D2 code vol: zhihaoyin(+4,665,628/-1,866,842), xudongluo(+2,015/-440,523), WL(+29,219/-144)
+D3 file breadth: zhihaoyin(2,187), xudongluo(1,122), yiranwang(372)
+D4 active days: miaoriofeng(5d), yiranwang(5d), xiaoyin(4d)
+D7 file types: .prefab(4,507,434), .unity(1,699,855), .asset(580,985)
+D9 largest: zhihaoyin(4,632,236), zhihaoyin(1,861,161), xudongluo(437,904)

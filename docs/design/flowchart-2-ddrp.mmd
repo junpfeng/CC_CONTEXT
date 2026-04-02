@@ -1,0 +1,71 @@
+flowchart TD
+    FROM_PLAN(["从 Step 3.5 / 断点恢复 进入"])
+
+    subgraph S4["Step 4  全自动实现 + DDRP 递归依赖解决"]
+
+        ENGINE{"引擎选择<br/>idea.md字段 > 用户指定 > AI推荐"}
+        DW["dev-workflow<br/>当前会话执行"]
+        AW["auto-work<br/>run_in_background"]
+
+        subgraph LOOP["DDRP 外循环  MAX_ROUNDS = 5"]
+            direction TB
+            INC["ROUND += 1"]
+            CHK_MAX{"ROUND > 5 ?"}
+            RUN["运行引擎<br/>dev-workflow 或 auto-work"]
+
+            subgraph DETECT["检查依赖请求  两道防线"]
+                D1["防线一: glob ddrp-req-*.md<br/>收集 status: open"]
+                D2["防线二: 无 open 但有 discarded task<br/>分析编译错误自动生成 ddrp-req"]
+            end
+
+            HAS_OPEN{"有 open<br/>请求?"}
+
+            subgraph RESOLVE["解决依赖  查 ddrp-registry.json"]
+                REG{"注册表<br/>状态?"}
+                R_DONE["completed<br/>grep 验证符号<br/>标记 resolved"]
+                R_DEV["developing<br/>等待 timeout 30min"]
+                R_FAIL["failed<br/>标记 failed<br/>降级继续"]
+                R_NEW["未注册"]
+                SPAWN["准备子 idea.md<br/>注册 developing<br/>spawn claude -p<br/>/new-feature"]
+            end
+
+            WAIT["等待子进程完成<br/>读 acceptance-report.md<br/>更新 registry"]
+            NEW_RES{"有新<br/>resolved?"}
+            RESET["读 ddrp-req 阻塞的task<br/>discarded → pending"]
+        end
+    end
+
+    GOTO5(["进入 Step 5 验收"])
+    RECURSIVE(["子 feature 递归<br/>进入 /new-feature Step 0"])
+
+    FROM_PLAN --> ENGINE
+    ENGINE -->|"dev-workflow"| DW
+    ENGINE -->|"auto-work"| AW
+    DW --> INC
+    AW --> INC
+
+    INC --> CHK_MAX
+    CHK_MAX -->|"超限"| GOTO5
+    CHK_MAX -->|"未超"| RUN
+    RUN --> D1 --> D2
+    D2 --> HAS_OPEN
+    HAS_OPEN -->|"无 open"| GOTO5
+    HAS_OPEN -->|"有 open"| REG
+    REG -->|"completed"| R_DONE --> WAIT
+    REG -->|"developing"| R_DEV --> WAIT
+    REG -->|"failed"| R_FAIL --> WAIT
+    REG -->|"未注册"| R_NEW --> SPAWN --> WAIT
+    SPAWN -.->|"claude -p 递归"| RECURSIVE
+    WAIT --> NEW_RES
+    NEW_RES -->|"有"| RESET --> INC
+    NEW_RES -->|"无"| GOTO5
+
+    classDef purple fill:#e1bee7,stroke:#7b1fa2,color:#4a148c
+    classDef deepp fill:#d1c4e9,stroke:#512da8,color:#311b92
+    classDef go fill:#b2dfdb,stroke:#00796b,color:#004d40
+    classDef warn fill:#fff9c4,stroke:#f9a825,color:#f57f17
+
+    class ENGINE,DW,AW purple
+    class INC,CHK_MAX,RUN,D1,D2,HAS_OPEN,REG,R_DONE,R_DEV,R_FAIL,R_NEW,SPAWN,WAIT,NEW_RES,RESET deepp
+    class GOTO5 go
+    class RECURSIVE warn

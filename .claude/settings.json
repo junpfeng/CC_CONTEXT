@@ -1,0 +1,150 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/health-check-session.sh\"",
+            "timeout": 120000,
+            "statusMessage": "Running workspace health check..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/cs-baseline-snapshot.sh\"",
+            "timeout": 5000,
+            "statusMessage": "Recording .cs baseline..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-obvious-asks.sh\"",
+            "timeout": 3000,
+            "statusMessage": "自主闭环硬过滤..."
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "prompt",
+            "prompt": "你是自主闭环守卫。Claude 正在尝试向用户提问，判断这个提问是否违反了自主闭环原则。\n\n核心原则：能判断的直接做，不要反复询问确认。遇到问题自主解决，不问用户。\n\n必须 BLOCK 的提问（违反自主闭环）：\n- 询问是否启动/重启服务器（直接做）\n- 询问是否执行某个修复操作（直接做）\n- 询问如何解决环境问题（自主排障）\n- 确认是否继续下一步（直接继续）\n- 询问选择哪个方案（除非方案有本质区别且影响重大）\n- 测试/验收阶段的任何技术性提问（测试失败应自主修复，不是问用户怎么办）\n- 询问是否需要运行测试/编译/验证（直接运行）\n- 任何关于 MCP/Unity/服务器/环境问题的提问（自主排障）\n\n允许 ALLOW 的提问（仅限以下场景）：\n- 需求本身模糊，需要澄清业务意图（不是技术细节）\n- 涉及不可逆的破坏性操作且用户未明确授权（如删除分支/重置数据库）\n- Skill 工作流中明确设计的用户确认环节（仅限：bug-explore Phase 2 结构化提问和 Phase 3 bug 报告确认、new-feature Step 0 参数确认和 Step 3 方案确认）\n\n严格判断标准：当你不确定时，倾向于 BLOCK。只有明确属于 ALLOW 列表中的场景才放行。\n\n提问内容：$ARGUMENTS",
+            "statusMessage": "自主闭环检查..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-marker-tamper.sh\"",
+            "timeout": 3000,
+            "statusMessage": "Marker tamper check..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/verify-mcp-before-commit.sh\"",
+            "timeout": 15000,
+            "statusMessage": "Checking MCP verification before commit..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/acceptance-before-push.sh\"",
+            "timeout": 15000,
+            "statusMessage": "Checking acceptance report before push..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/verify-mcp-before-stop.sh\"",
+            "timeout": 45000,
+            "statusMessage": "Checking MCP visual verification..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/delivery-quality-check.sh\"",
+            "timeout": 5000,
+            "statusMessage": "交付质量检查..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__ai-game-developer__screenshot-game-view|mcp__ai-game-developer__screenshot-scene-view|mcp__ai-game-developer__script-execute",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/post-mcp-verify.sh\"",
+            "timeout": 5000,
+            "statusMessage": "Recording MCP verification..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint-cs-after.sh\"",
+            "timeout": 15000,
+            "statusMessage": "C# lint check..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/go-build-after.sh\"",
+            "timeout": 30000,
+            "statusMessage": "Checking Go compilation..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/go-test-after.sh\"",
+            "timeout": 5000,
+            "statusMessage": "Tracking test execution..."
+          }
+        ]
+      }
+    ]
+  }
+}

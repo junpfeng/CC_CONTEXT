@@ -1,0 +1,249 @@
+{
+  "title": "大世界V2 NPC系统 - 客户端设计详情",
+
+  "client_design": {
+    "architecture_overview": "客户端在BigWorld模块目录下新建独立的NPC子系统，采用Controller+Comp模式。BigWorldNpcController不继承TownNpcController，通过组件组合实现功能。数据驱动：服务端NpcDataUpdate→NetData→DataSignal→各Comp响应。",
+
+    "directory_structure": {
+      "root": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/",
+      "files": [
+        "Entity/NPC/BigWorldNpcController.cs",
+        "Entity/NPC/Comp/BigWorldNpcAnimationComp.cs",
+        "Entity/NPC/Comp/BigWorldNpcFsmComp.cs",
+        "Entity/NPC/Comp/BigWorldNpcTransformComp.cs",
+        "Entity/NPC/Comp/BigWorldNpcMoveComp.cs",
+        "Entity/NPC/Comp/BigWorldNpcEmotionComp.cs",
+        "Entity/NPC/State/BigWorldNpcIdleState.cs",
+        "Entity/NPC/State/BigWorldNpcMoveState.cs",
+        "Entity/NPC/State/BigWorldNpcTurnState.cs",
+        "Managers/BigWorldNpcManager.cs"
+      ]
+    },
+
+    "managers": [
+      {
+        "name": "BigWorldNpcManager",
+        "base_type": "BaseManager",
+        "responsibilities": [
+          "NPC生命周期管理：响应NetEntity创建/销毁事件，管理Controller字典(entityId→Controller)",
+          "对象池管理：<!-- [迭代3修复] I3 --> 大世界loading阶段预热20个NPC实例（pool_size=client_max_npc_count），池容量上限20，溢出时排队等待回收不即时Instantiate。Spawn时从池获取，Despawn时回收到池",
+          "LOD管理：根据NPC与相机距离分三档（近/中/远），控制动画更新频率和渲染精度",
+          "批量创建节流：每帧最多创建N个NPC（防突刺），多余的排队等下帧"
+        ],
+        "lifecycle": {
+          "OnInit": "<!-- [迭代11修复] I5: 预热async流程和就绪标记 --> 注册NetEntity事件监听、启动对象池异步预热（async UniTask）。预热流程：(1)标记_isReady=false；(2)await异步加载NPC prefab资源（通过YooAsset.LoadAssetAsync）；(3)prefab加载完成后同步Instantiate pool_size=20个实例入池（Instantiate是同步操作，在loading界面执行不影响gameplay帧率）；(4)标记_isReady=true。就绪前竞态处理：_isReady=false期间收到NPC生成消息时，将请求排入_pendingSpawnQueue（Queue<PendingSpawnData>），_isReady变为true后在下一帧统一处理队列中的待生成请求。池容量上限=20，池满时新请求排队等待回收，不即时Instantiate避免运行时GC。加载NPC配置",
+          "OnClear": "销毁所有NPC、清空对象池、解除事件监听"
+        },
+        "file": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Managers/BigWorldNpcManager.cs"
+      }
+    ],
+
+    "controllers": [
+      {
+        "name": "BigWorldNpcController",
+        "base_class": "Controller（或NetEntity基类）",
+        "description": "大世界NPC主控制器，聚合所有功能组件。不继承MonsterController或TownNpcController。",
+        "components": [
+          "BigWorldNpcTransformComp — 位置同步",
+          "BigWorldNpcMoveComp — 移动驱动",
+          "BigWorldNpcFsmComp — 状态机",
+          "BigWorldNpcAnimationComp — 动画",
+          "BigWorldNpcAppearanceComp — <!-- [迭代9修复] I1 --> 外观加载",
+          "BigWorldNpcEmotionComp — 情绪表现（P1）"
+        ],
+        "lifecycle": {
+          "OnInit": [
+            "1. 初始化ClientData（从NetData解析）",
+            "2. this.AddComp<BigWorldNpcTransformComp>()",
+            "3. this.AddComp<BigWorldNpcMoveComp>()",
+            "4. this.AddComp<BigWorldNpcFsmComp>()",
+            "5. this.AddComp<BigWorldNpcAnimationComp>()",
+            "6. this.AddComp<BigWorldNpcAppearanceComp>()  // <!-- [迭代9修复] I1 -->",
+            "7. this.AddComp<BigWorldNpcEmotionComp>()  // P1",
+            "7. 注册DataSignal监听：_data.NetData.Listen<TownNpcData>(DataSignalType.NpcV2Update, OnNpcV2Update)",
+            "8. 根据全量数据初始化各Comp状态"
+          ],
+          "OnClear": [
+            "1. 解除所有DataSignal监听",
+            "2. 各Comp自动OnClear（框架保证）",
+            "3. CancellationTokenSource.Cancel()取消所有异步任务"
+          ]
+        },
+        "design_notes": [
+          "新Comp必须在OnInit中AddComp（feedback_client_comp_registration）",
+          "async UniTaskVoid必须带CancellationToken（feedback_unitask_cancellation）",
+          "using FL.NetModule时必须加Vector2/Vector3 alias消歧义（feedback_netmodule_using_alias）"
+        ],
+        "file": "freelifeclient/Assets/Scripts/Gameplay/Modules/BigWorld/Entity/NPC/BigWorldNpcController.cs"
+      }
+    ],
+
+    "components": [
+      {
+        "name": "BigWorldNpcTransformComp",
+        "description": "位置和朝向同步组件，使用TransformSnapshotQueue实现平滑插值",
+        "responsibilities": [
+          "接收服务端位置数据，加入SnapshotQueue",
+          "每帧从SnapshotQueue插值计算当前位置和朝向",
+          "HiZCulling生效时暂停更新（节省CPU）"
+        ],
+        "key_apis": [
+          "OnPositionUpdate(Vector3 pos, float headingDeg) — 服务端数据到达",
+          "UpdateTransform() — 每帧调用，插值更新Transform"
+        ],
+        "design_notes": [
+          "参考reference_npc_movement_pattern（TransformSnapshotQueue插值模式）",
+          "朝向使用度数（headingDeg），与Quaternion.Euler匹配",
+          "Y坐标信任服务端数据（已经过Grounds层Raycast修正）"
+        ]
+      },
+      {
+        "name": "BigWorldNpcMoveComp",
+        "description": "移动驱动组件，将服务端移动数据转化为CharacterController/Transform移动",
+        "responsibilities": [
+          "根据移速和目标位置驱动NPC实际移动",
+          "移动模式切换（Idle/Walk/Run）",
+          "与TransformComp协作确保位置一致"
+        ],
+        "key_apis": [
+          "SetMoveTarget(Vector3 target, float speed) — 设置移动目标",
+          "SetMoveMode(MoveMode mode) — 切换移动模式",
+          "TickMove() — 每帧执行移动"
+        ]
+      },
+      {
+        "name": "BigWorldNpcFsmComp",
+        "description": "轻量级有限状态机，由服务端AnimState驱动状态切换",
+        "responsibilities": [
+          "管理FSM状态栈（当前状态+转换）",
+          "状态切换时调用OnEnter/OnExit/OnUpdate",
+          "确保OnExit清理所有动画层（feedback_animation_layer_cleanup）"
+        ],
+        "states": [
+          {
+            "name": "BigWorldNpcIdleState",
+            "description": "静止状态，播放Idle动画",
+            "enter": "AnimationComp.PlayIdle()",
+            "exit": "Stop idle动画层",
+            "transitions": ["收到Walk/Run AnimState → MoveState", "收到Turn AnimState → TurnState"]
+          },
+          {
+            "name": "BigWorldNpcMoveState",
+            "description": "移动状态（Walk/Run），动画速度与移速归一化",
+            "enter": "AnimationComp.PlayMove(speed)，速度归一化匹配实际移速",
+            "update": "MoveComp.TickMove()，AnimationComp.UpdateMoveSpeed(currentSpeed)",
+            "exit": "Stop move动画层",
+            "transitions": ["速度=0 → IdleState", "角度差>阈值(度数) → TurnState"],
+            "design_notes": ["动画归一化refSpeed必须匹配实际移速（feedback_anim_speed_normalization）", "角度阈值使用度数，禁止弧度混用（auto-work-lesson-002）"]
+          },
+          {
+            "name": "BigWorldNpcTurnState",
+            "description": "原地转向状态",
+            "enter": "AnimationComp.PlayTurn(direction)",
+            "update": "插值旋转朝向",
+            "exit": "Stop turn动画层",
+            "transitions": ["转向完成（角度差<阈值度数） → IdleState或MoveState"]
+          }
+        ],
+        "design_notes": [
+          "FSM状态由服务器AnimState驱动，客户端不做自主决策",
+          "状态枚举独立于TownNpcFsmComp（REQ-011）",
+          "每个State的OnExit必须Stop所有使用过的动画层"
+        ]
+      },
+      {
+        "name": "BigWorldNpcAnimationComp",
+        "description": "Animancer多层动画组件，管理NPC动画播放",
+        "responsibilities": [
+          "管理Animancer图（AnimancerComponent）",
+          "分层播放：Base层（Idle/Walk/Run/Turn）、UpperBody层（反应动画，P1）",
+          "动画速度归一化（移速→动画速度比例）",
+          "HiZCulling时暂停/恢复Animancer图"
+        ],
+        "key_apis": [
+          "PlayIdle() — 播放Idle clip",
+          "PlayMove(float speed) — 播放Walk或Run clip，根据speed选择",
+          "PlayTurn(float direction) — 播放转向clip",
+          "SetAnimSpeed(float ratio) — 设置动画播放速度比例",
+          "PauseGraph() / ResumeGraph() — HiZCulling控制"
+        ],
+        "design_notes": [
+          "播放clip时必须检查isLooping（feedback_anim_clip_loop_check）",
+          "动画归一化refSpeed必须匹配实际移速（feedback_anim_speed_normalization）",
+          "使用Animancer而非Unity Animator Controller"
+        ]
+      },
+      {
+        "name": "BigWorldNpcEmotionComp",
+        "description": "情绪表现组件（P1阶段实现）",
+        "responsibilities": [
+          "接收服务端情绪数据（MoodLevel/ReactType）",
+          "驱动表情动画（Face层）和反应动画（UpperBody层）",
+          "情绪UI指示器（如果需要）"
+        ],
+        "priority": "P1",
+        "key_apis": [
+          "OnEmotionUpdate(int moodLevel, int reactType) — 服务端数据到达",
+          "PlayReactAnimation(ReactType type) — 播放反应动画"
+        ]
+      },
+      {
+        "name": "BigWorldNpcAppearanceComp",
+        "description": "<!-- [迭代9修复] I1: 补充AppearanceComp详细设计 --> 大世界NPC外观加载与管理组件，负责BodyParts异步加载、挂载、卸载",
+        "responsibilities": [
+          "根据服务端下发的外观ID异步加载BodyParts预制件并挂载到骨骼节点",
+          "管理外观部件生命周期（加载/卸载/替换）",
+          "对象池复用时清理外观状态"
+        ],
+        "lifecycle": {
+          "OnInit": "根据Controller传入的appearanceId，启动UniTask异步加载BodyParts预制件（hair/top/bottom/shoes/accessory），加载完成后挂载到骨骼节点。使用CancellationToken绑定Controller生命周期",
+          "OnClear": "卸载所有已加载的BodyParts预制件（Destroy或回收到资源池），Cancel异步加载任务，清零所有部件引用"
+        },
+        "key_apis": [
+          "LoadAppearanceAsync(string appearanceId, CancellationToken ct) — 异步加载外观配置对应的所有BodyParts",
+          "UnloadAppearance() — 卸载当前所有外观部件",
+          "ResetForPool() — 对象池复用时清零外观引用（不卸载，OnClear已卸载）"
+        ],
+        "design_notes": [
+          "async加载必须带CancellationToken（feedback_unitask_cancellation）",
+          "<!-- [迭代11修复] I4: 外观加载失败fallback详细策略 --> 加载失败时的fallback策略：(1)单个BodyPart加载失败（prefab缺失/资源损坏/YooAsset包未下载）→跳过该部件，其余部件正常显示，MLog.Error记录失败部件名和原因；(2)所有BodyParts全部加载失败→应用fallback外观（配置中第一套外观ID，即最基础的body-only模型），MLog.Error记录；(3)fallback外观也加载失败→NPC使用预制件自带的默认网格（确保NPC prefab自带最简mesh渲染器），MLog.Error记录。目标：确保NPC不会以T-pose或隐形状态出现在玩家视野中",
+          "对象池双阶段：OnClear卸载部件释放资源 → ResetForPool清零引用防残留（与plan.json pool_reset_flow一致）",
+          "外观ID由服务端BigWorldExtHandler.OnNpcCreated随机分配，通过NpcDataUpdate下发"
+        ]
+      }
+    ],
+
+    "lod_system": {
+      "description": "客户端AI LOD分级策略（基于NPC与主相机距离）",
+      "levels": [
+        {"name": "FULL", "distance": "0-50m", "animation_update": "每帧", "render": "完整模型+阴影", "interpolation": "默认外推窗口300ms"},
+        {"name": "REDUCED", "distance": "50-150m", "animation_update": "每3帧", "render": "简化模型+无阴影", "interpolation": "<!-- [迭代9修复] C2: 对齐LOD阈值 --> 外推窗口500ms+EaseOut缓动"},
+        {"name": "MINIMAL", "distance": "150m+", "animation_update": "暂停", "render": "HiZCulling裁剪", "interpolation": "外推窗口800ms+线性缓动"}
+      ],
+      "_lod_note": "<!-- [迭代9修复] C2 --> 客户端LOD阈值唯一权威源为plan.json lod_alignment，此处保持同步"
+    },
+
+    "state_management": "客户端不缓存NPC决策状态，所有行为状态由服务器通过NpcDataUpdate推送。本地维护：(1) NPC实体字典 entityId→BigWorldNpcController，(2) 对象池Queue<BigWorldNpcController>，(3) LOD分级缓存。数据流：NpcData.NetData.Listen→DataSignal→各Comp响应。",
+
+    "error_handling": {
+      "network_delay": "NPC维持最后已知状态（继续当前动画和移动插值），不做客户端预测",
+      "reconnect": "<!-- [迭代3修复] I6: 无闪烁重连策略 --> 重连时不立即清空NPC字典，而是标记所有现有NPC为'待验证'(pendingValidation=true)。收到服务端全量推送后，逐个对比entityId：已存在的更新状态数据，不存在的销毁回池，新增的从池创建。全量推送处理完成后，仍为pendingValidation的NPC执行销毁。此策略避免NPC集体闪烁",
+      "spawn_failure": "MLog.Error记录失败原因，跳过该NPC不影响其他NPC",
+      "animation_missing": "MLog.Warn记录缺失的clip名，回退到Idle动画"
+    },
+
+    "key_constraints": [
+      "BigWorld NPC代码放在BigWorld模块目录下，不引用S1Town模块的类型（REQ-013）",
+      "新Comp必须在Controller.OnInit中AddComp（feedback_client_comp_registration）",
+      "async UniTaskVoid必须带CancellationToken，OnClear中Cancel（feedback_unitask_cancellation）",
+      "FSM OnExit必须Stop所有使用过的动画层（feedback_animation_layer_cleanup）",
+      "Animancer播放clip时检查isLooping（feedback_anim_clip_loop_check）",
+      "动画归一化refSpeed必须匹配实际移速（feedback_anim_speed_normalization）",
+      "static readonly禁用LayerMask.NameToLayer，用延迟初始化（feedback_static_field_layer_mask）",
+      "EntityId是ulong不是int（feedback_entityid_is_ulong）",
+      "using FL.NetModule时加Vector2/Vector3 alias消歧义（feedback_netmodule_using_alias）",
+      "日志使用MLog，禁止Debug.Log",
+      "异步使用UniTask，禁止System.Threading.Task"
+    ]
+  }
+}

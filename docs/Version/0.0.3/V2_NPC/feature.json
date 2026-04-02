@@ -1,0 +1,190 @@
+{
+  "name": "大世界 V2 NPC 表现力对齐",
+  "overview": "将大世界 NPC（BigWorldNpc*）的动画层、FSM 状态机、性别外观加载对齐至小镇 V2 NPC 的成熟实现，在不破坏大世界速度驱动架构的前提下，消除两套实现之间的功能裂缝，使 200+ NPC 的大世界场景具备转身过渡、场景点行为（坐下/驻足）、右手持物、面部表情等基础表现力。",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "category": "外观系统",
+      "title": "按性别加载不同 Prefab",
+      "description": "BigWorldNpcAppearanceComp.LoadAppearanceAsync() 已从 baseInfo.Gender 读取性别字段，但 BigWorldNpcController 在实例化时始终使用通用 NewNpcPrefab，导致女性 NPC 体型错误。需在 Controller 实例化阶段根据 Gender 选择 NewNpcPrefab（男）或 NewNpcPrefab_Female（女），复用小镇已有的女性 Prefab，无需另建资源。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "服务端下发 Gender=Female 的 NPC，客户端加载 NewNpcPrefab_Female.prefab",
+        "服务端下发 Gender=Male 的 NPC，客户端加载 NewNpcPrefab.prefab",
+        "Gender 字段缺失或未知时回退到男性 Prefab，不报错",
+        "切换场景后重新进入大世界，女性 NPC 仍正确显示女性体型",
+        "改动仅在 BigWorldNpcController / BigWorldNpcAppearanceComp 内，不影响 TownNpcController"
+      ]
+    },
+    {
+      "id": "REQ-002",
+      "category": "FSM 状态机",
+      "title": "增加 TurnState（转身过渡状态）",
+      "description": "大世界 NPC 当前缺少客户端专用的转身过渡状态，NPC 改变朝向时直接切朝向，表现生硬。参考 TownNpcTurnState 实现 BigWorldNpcTurnState：当朝向差超过阈值时，FSM 先进入 TurnState 播放转身动画，动画结束后再回到原状态。TurnState 为纯客户端状态，不需要服务端映射。需遵循 lesson-002 的角度单位一致性规则（统一用度数，阈值常量加 Deg 后缀）。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "NPC 朝向差 >= TurnThresholdDeg（建议 45f）时触发 TurnState",
+        "TurnState 播放转身动画，动画结束后自动切回触发前的状态",
+        "TurnState 期间移动输入仍正常响应（不卡在转身），超时 2s 强制退出",
+        "转身角度阈值通过常量 TurnThresholdDeg 定义，不使用魔法数字",
+        "BigWorldNpcFsmComp.CreateFsm() 中注册 BigWorldNpcTurnState，serverStateMap 无新增映射",
+        "200 NPC 场景下开启转身动画，帧率下降不超过 2fps（~0.5ms）"
+      ]
+    },
+    {
+      "id": "REQ-003",
+      "category": "FSM 状态机",
+      "title": "增加 ScenarioState（场景点行为状态）",
+      "description": "大世界 NPC 到达巡逻节点/场景点后，当前只能停留在 IdleState。需新增 BigWorldNpcScenarioState 与 BigWorldNpcScheduleIdleState，映射服务端 NpcState.Scenario 和 NpcState.ScheduleIdle 枚举值。ScenarioState 负责播放场景点指定动画（坐下、驻足观景、使用设备等），具体动画 Key 由服务端通过现有 NpcState 字段携带，不新增协议字段。",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": [
+        "服务端推送 NpcState=Scenario 时，FSM 切入 BigWorldNpcScenarioState",
+        "服务端推送 NpcState=ScheduleIdle 时，FSM 切入 BigWorldNpcScheduleIdleState",
+        "ScenarioState 能通过动画组配置播放指定 Key 的动画（如 Sit、Watch、UseDevice）",
+        "状态退出时动画正确淡出（CrossFade），不留残留动画权重",
+        "现有 Idle/Move/Run 状态行为不受影响"
+      ]
+    },
+    {
+      "id": "REQ-004",
+      "category": "动画系统",
+      "title": "补齐 RightArm 和 AdditiveBodyExtra 动画层",
+      "description": "BigWorldNpcAnimationComp 当前 7 层（缺 RightArm 和 AdditiveBodyExtra）。需参考 TownNpcAnimationComp 补充这两层：RightArm 层绑定 RightArmAvatarMask，用于右手持物/单手动作叠加；AdditiveBodyExtra 层为 Additive 混合模式，用于额外身体叠加动画。补充对应 AvatarMask 的异步加载（LoadAvatarMasks 扩展）。动画层初始化时权重为 0，只在需要时激活，避免静默 CPU 开销。",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": [
+        "BigWorldNpcAnimationComp 初始化后包含 RightArm 和 AdditiveBodyExtra 两层",
+        "RightArm 层绑定 RightArmAvatarMask，初始权重 0",
+        "AdditiveBodyExtra 层为 Additive 混合模式，初始权重 0",
+        "Play(key, AnimancerLayers.RightArm) 和 Play(key, AnimancerLayers.AdditiveBodyExtra) 可正常调用",
+        "LoadAvatarMasks() 异步加载 RightArmAvatarMask，加载失败时层降级为无 Mask 运行，不抛异常",
+        "新增两层后，200 NPC 场景单帧动画 CPU 耗时增量 < 0.3ms（两层初始权重为 0 时几乎无开销）"
+      ]
+    },
+    {
+      "id": "REQ-005",
+      "category": "动画系统",
+      "title": "补齐面部动画支持（Face 层 + Face AvatarMask）",
+      "description": "大世界 NPC 已有 Face 层字段声明，但 LoadAvatarMasks 未加载 FaceAvatarMask，且无面部动画 Clip 缓存机制。需参考 TownNpcAnimationComp 的 _faceClips 实现：异步预加载 Angry/Happy/Sad/Idle 四个面部 Clip，Face 层绑定 FaceAvatarMask。EmotionComp 变化时由 FsmComp 通知 AnimationComp 在 Face 层播放对应情绪动画。",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": [
+        "BigWorldNpcAnimationComp 初始化时异步加载 FaceAvatarMask 和 4 个面部 Clip",
+        "Face 层绑定 FaceAvatarMask，初始权重 1（面部始终激活）",
+        "PlayFaceAnim(ConfigEnum.TransitionKey key) 接口可在 Face 层播放对应 Clip",
+        "情绪变化（Angry/Happy/Sad/Curious 等）时，Face 层切换对应面部动画",
+        "面部 Clip 资源加载失败时静默跳过，不影响身体动画",
+        "面部动画 Clip 路径与小镇保持一致（ArtResources/Animation/Human/Face/）"
+      ]
+    },
+    {
+      "id": "REQ-006",
+      "category": "动画系统",
+      "title": "Timeline 动画支持",
+      "description": "BigWorldNpcAnimationComp 已有 _replaceTransitions 但缺少 _replaceTimelines。需补充 Dictionary<ConfigEnum.TransitionKey, TimelineAsset> _replaceTimelines 字段及对应的加载、播放、停止接口，参考 TownNpcAnimationComp 实现。ScenarioState 触发场景点剧情时可通过 Timeline 播放复杂动画序列。",
+      "priority": "P1",
+      "side": "client",
+      "acceptance_criteria": [
+        "BigWorldNpcAnimationComp 具备 _replaceTimelines 字段",
+        "ChangeAnimationsByGroup() 同步加载该组的 TimelineAsset 替换表",
+        "PlayTimeline(ConfigEnum.TransitionKey key) 接口可触发 Timeline 播放",
+        "StopTimeline() 接口可停止当前 Timeline 并回到 Animancer 控制",
+        "Timeline 资源不存在时降级到普通 Transition 播放，不报错"
+      ]
+    },
+    {
+      "id": "REQ-007",
+      "category": "FSM 状态机",
+      "title": "补全情绪/战斗/警惕类状态的动画表现",
+      "description": "BigWorldNpcFsmComp 已在 serverStateMap 中注册了 Combat/Flee/Watch/Investigate/Scared/Panicked/Curious/Nervous/Angry 等状态，但当前全部映射到 IdleState 或 MoveState，缺少专用的动画表现区分。需为每类状态创建或复用状态类，至少实现：进入时切换对应动画组或叠加动画（如 Combat 切 CombatWpn 组、Scared 在 AdditiveBody 层叠加恐惧动作）。",
+      "priority": "P2",
+      "side": "client",
+      "acceptance_criteria": [
+        "NpcState=Combat 时，底层动画组切换至 CombatWpn（若配置存在）",
+        "NpcState=Scared/Panicked 时，AdditiveBody 层播放对应恐惧叠加动画",
+        "NpcState=Flee 时，移动动画与普通 Move 有视觉区分（跑动姿态叠加）",
+        "状态退出时叠加动画正确淡出，权重归零",
+        "无对应动画配置时回退到基础 Idle/Move 表现，不报错"
+      ]
+    },
+    {
+      "id": "REQ-008",
+      "category": "动画系统",
+      "title": "击中反应动画",
+      "description": "大世界 NPC 被攻击时无任何视觉反馈。需在 BigWorldNpcAnimationComp 参考 TownNpcAnimationComp 的 HitData 处理逻辑：收到击中事件时在 UpperBody 层短暂播放击中反应动画（约 1s），通过 _isInHitReaction + _hitReactionTimer 控制，结束后自动恢复。",
+      "priority": "P2",
+      "side": "client",
+      "acceptance_criteria": [
+        "OnHit(HitData) 接口触发 UpperBody 层播放击中反应动画",
+        "击中动画持续约 1s 后自动结束，恢复上一个 UpperBody 动画",
+        "击中期间 _isInHitReaction = true，FSM 不触发新的 UpperBody 动画覆盖",
+        "死亡状态（NpcState.Death）下不触发击中反应",
+        "击中动画资源缺失时静默跳过，不影响其他动画层"
+      ]
+    }
+  ],
+  "interaction_design": {
+    "description": "大世界 NPC 表现力提升为纯服务器驱动的被动表现，玩家无法主动操控 NPC 行为。所有状态变化由服务端 NpcState 推送触发，客户端仅负责映射至对应动画/FSM 状态。",
+    "controls": [
+      "无玩家直接操控，所有 NPC 行为由服务端帧同步驱动",
+      "场景点行为（坐下/驻足）由服务端 Scenario/ScheduleIdle 状态推送触发",
+      "转身过渡为客户端自主判断，基于 Transform.forward 与目标朝向差值"
+    ],
+    "flows": [
+      "NPC 生成 → AppearanceComp 按 Gender 异步加载 Prefab → 加载完成后播放 Idle 动画",
+      "服务端推送移动目标 → MoveComp 驱动位移 → AnimationComp 速度驱动混合 Walk/Run",
+      "朝向差 >= 45° → FsmComp 插入 TurnState → TurnState 播放转身动画 → 动画结束返回前序状态",
+      "服务端推送 NpcState.Scenario → FsmComp 切入 ScenarioState → AnimationComp 播放场景点动画",
+      "情绪变化 → EmotionComp 通知 AnimationComp → Face 层切换对应面部表情动画",
+      "NPC 进入 HiZ Cull 区域 → AnimationComp._isCulled = true → 所有层暂停更新，节省 CPU"
+    ]
+  },
+  "technical_constraints": [
+    {
+      "category": "性能",
+      "description": "单帧 200 NPC 动画系统总 CPU 开销增量不超过 0.5ms。新增动画层（RightArm/AdditiveBodyExtra）初始权重必须为 0，只有激活时才产生开销。面部动画层因始终激活，面部 Clip 必须为轻量 2D 动画，不含骨骼 IK。"
+    },
+    {
+      "category": "性能",
+      "description": "转身动画、场景点动画的 Clip 资源通过 YooAsset 异步加载，不阻塞主线程。加载期间 NPC 保持当前状态，不卡帧等待。"
+    },
+    {
+      "category": "架构",
+      "description": "所有新增类和修改必须限制在 BigWorldNpc* 命名的文件内（BigWorldNpcFsmComp、BigWorldNpcAnimationComp、BigWorldNpcAppearanceComp、BigWorldNpcController），不修改任何 TownNpc* 文件。"
+    },
+    {
+      "category": "架构",
+      "description": "不新增服务端协议字段和 NpcState 枚举值。所有新状态（TurnState 除外）必须映射到 NpcState 已有枚举值。TurnState 为客户端自主状态，不参与服务端映射。"
+    },
+    {
+      "category": "架构",
+      "description": "大世界动画驱动方式保持速度驱动（UpdateSpeedDrivenAnimation），不切换为小镇的 FSM 直接驱动模式。新增状态的特殊动画通过叠加层或动画组切换实现，不干扰底层速度驱动逻辑。"
+    },
+    {
+      "category": "资源",
+      "description": "女性 Prefab 直接引用小镇已有的 NewNpcPrefab_Female.prefab，AvatarMask 复用小镇已有的 RightArmAvatarMask 和 FaceAvatarMask，不新建重复资源。"
+    }
+  ],
+  "dependencies": [
+    "BigWorldNpcAppearanceComp — 已有三级 Fallback 的外观加载，REQ-001 在此基础上扩展 Prefab 选择逻辑",
+    "BigWorldNpcFsmComp — 已注册完整 serverStateMap，REQ-002/003/007 在现有 FSM 框架内新增状态类",
+    "BigWorldNpcAnimationComp — 已有 7 层 Animancer 架构，REQ-004/005/006/008 在此扩展",
+    "TownNpcAnimationComp — 参考实现，不修改，仅作为代码蓝本",
+    "TownNpcFsmComp/TownNpcTurnState — 参考 TurnState 实现，不修改",
+    "BigWorldNpcEmotionComp — REQ-005 面部动画需监听 EmotionComp 情绪变化事件",
+    "AnimancerLayers 枚举 — 确认 RightArm/AdditiveBodyExtra/Face 枚举值已存在，否则需扩展枚举（不影响协议）",
+    "NpcState 枚举（服务端） — REQ-003/007 依赖已有 Scenario/ScheduleIdle/Combat/Flee 等枚举值，不新增"
+  ],
+  "notes": [
+    "[待确认] BigWorldNpcFsmComp 中 TurnState 是否已有占位注册（从代码摘要看 serverStateMap 注释提到 client-only TurnState，需确认是否已实现或只是注释）",
+    "[待确认] AnimancerLayers 枚举中 RightArm 和 AdditiveBodyExtra 的整数值是否与小镇一致，跨系统共享枚举时需确认无冲突",
+    "[待确认] 大世界 NPC Prefab 引用路径——NewNpcPrefab_Female.prefab 的 AssetKey 是通过 YooAsset Tag 还是直接路径加载，需与 AppearanceComp 加载方式保持一致",
+    "[待确认] ScenarioState 播放的动画 Key（Sit/Watch/UseDevice）是否已在动画组配置表（NpcWpn00 或其他组）中定义，若无需配套补充配置表数据",
+    "[待确认] 面部动画 Clip 资源（Clip_Face_Angry 等）当前是否已在大世界场景的 YooAsset 打包分组中，若未包含需协调资源组配置",
+    "[待确认] HitData 事件在大世界伤害系统中的分发路径——大世界是否有与小镇相同的 OnHit 事件总线，REQ-008 依赖此机制",
+    "[待确认] 200+ NPC 全部开启面部动画层（Face 层权重 1）是否满足 0.5ms 约束，建议在实现后进行 Profiler 基准测试"
+  ]
+}

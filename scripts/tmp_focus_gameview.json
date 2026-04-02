@@ -1,0 +1,1 @@
+{"csharpCode":"using UnityEngine;\npublic class Script\n{\n    public static object Main()\n    {\n        var gameViewType = System.Type.GetType(\"UnityEditor.GameView,UnityEditor\");\n        if (gameViewType != null)\n            UnityEditor.EditorWindow.GetWindow(gameViewType, false, \"Game\", true);\n        return \"Game View focused\";\n    }\n}"}

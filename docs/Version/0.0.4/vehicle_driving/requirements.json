@@ -1,0 +1,72 @@
+{
+  "name": "玩家自由驾驶车辆（GTA5 风格）",
+  "overview": "打通 AI 交通车辆→玩家可操控车辆闭环，复用现有协议，核心是控制权切换和上下车全流程串联",
+  "classification": "direct",
+  "requirements": [
+    {
+      "id": "REQ-001",
+      "title": "交通车辆征用交互提示",
+      "description": "玩家靠近交通车辆时显示上车/征用交互提示UI",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["玩家接近交通车辆时出现交互提示", "离开范围后提示消失"]
+    },
+    {
+      "id": "REQ-002",
+      "title": "征用上车流程",
+      "description": "按键触发征用：NPC瞬间移除，玩家进入驾驶座。通过PullFromVehicleReq+OnVehicleReq实现",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": ["按键后NPC从车辆移除", "玩家进入驾驶座位", "服务端标记车辆脱离交通系统"]
+    },
+    {
+      "id": "REQ-003",
+      "title": "控制权切换（AI→玩家）",
+      "description": "车辆从DotsCity ECS kinematic模式切换到Rigidbody物理驱动，绑定玩家输入",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["DotsCity ECS注销车辆", "rb.isKinematic=false启用物理", "玩家输入可驱动WheelCollider"]
+    },
+    {
+      "id": "REQ-004",
+      "title": "物理驾驶操控",
+      "description": "玩家通过油门/刹车/转向/手刹操控车辆，WheelCollider物理响应，定期DriveVehicleReq上报服务端",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": ["油门加速正常", "刹车减速正常", "转向响应正常", "手刹可用", "服务端收到并处理DriveVehicleReq"]
+    },
+    {
+      "id": "REQ-005",
+      "title": "相机切换",
+      "description": "上车后切换到车辆跟随相机，下车后恢复步行相机。使用CfgVehicleBase的相机参数",
+      "priority": "P0",
+      "side": "client",
+      "acceptance_criteria": ["上车后相机平滑过渡到车辆跟随视角", "驾驶中相机跟随平滑", "下车后相机恢复步行视角"]
+    },
+    {
+      "id": "REQ-006",
+      "title": "下车流程",
+      "description": "按键下车，角色放置在车门旁，恢复步行状态，发送OffVehicleReq",
+      "priority": "P0",
+      "side": "both",
+      "acceptance_criteria": ["按键后角色离开车辆", "角色出现在车门旁", "恢复步行状态和步行相机"]
+    },
+    {
+      "id": "REQ-007",
+      "title": "车辆距离回收",
+      "description": "下车后车辆留在原地，玩家离开150m后服务端销毁实体（scene.RemoveEntity）",
+      "priority": "P1",
+      "side": "both",
+      "acceptance_criteria": ["下车后车辆留在原地可再次上车", "玩家离开150m后车辆被回收", "回收时正确调用scene.RemoveEntity防幽灵"]
+    }
+  ],
+  "technical_constraints": [
+    {"category": "架构", "description": "无新增协议，全复用现有vehicle.proto消息"},
+    {"category": "架构", "description": "征用为瞬间切换，不做征用动画"},
+    {"category": "性能", "description": "回收距离用XZ平方距离比较，150m阈值配置化"},
+    {"category": "架构", "description": "数据不持久化，征用车辆为临时内存状态"}
+  ],
+  "projects": ["P1GoServer", "freelifeclient"],
+  "dependencies": ["现有vehicle.proto协议", "DotsCity交通系统", "WheelCollider物理", "CfgVehicleBase配置表"],
+  "risks": ["DotsCity ECS→Rigidbody物理切换可能有状态残留", "交通系统注销API需确认DotsCity源码", "WheelCollider调参需运行时迭代"]
+}

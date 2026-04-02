@@ -1,0 +1,17 @@
+{
+  "protocols": [],
+  "note": "V2_NPC 为纯客户端表现力改动，不新增任何服务端协议字段或 NpcState 枚举值。所有新状态（TurnState/ScenarioState/ScheduleIdleState）均映射到 NpcState 已有枚举值。TurnState 为纯客户端自主状态，不参与服务端映射。",
+  "existing_npc_state_mapping": {
+    "description": "REQ-003/007 复用的已有 NpcState 枚举值（不新增）",
+    "used_by_new_states": [
+      {"enum_value": "NpcState.Scenario", "client_state": "BigWorldNpcScenarioState", "req": "REQ-003"},
+      {"enum_value": "NpcState.ScheduleIdle", "client_state": "BigWorldNpcScheduleIdleState", "req": "REQ-003"},
+      {"enum_value": "NpcState.Combat", "client_state": "动画组切换(CombatWpn) in existing state", "req": "REQ-007"},
+      {"enum_value": "NpcState.Flee", "client_state": "跑动姿态叠加 in MoveState", "req": "REQ-007"},
+      {"enum_value": "NpcState.Scared", "client_state": "AdditiveBody层叠加 in IdleState", "req": "REQ-007"},
+      {"enum_value": "NpcState.Panicked", "client_state": "AdditiveBody层叠加 in MoveState", "req": "REQ-007"},
+      {"enum_value": "NpcState.Watch", "client_state": "Watch动画组 in IdleState", "req": "REQ-007"},
+      {"enum_value": "NpcState.Investigate", "client_state": "Investigate动画组 in MoveState", "req": "REQ-007"}
+    ]
+  }
+}

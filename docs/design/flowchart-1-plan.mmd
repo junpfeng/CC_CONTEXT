@@ -1,0 +1,80 @@
+flowchart TD
+    START(["fa:fa-play /new-feature 一句话需求"])
+
+    subgraph S0["Step 0  收集基础信息 & 断点恢复"]
+        direction TB
+        S0_CHECK{"检查 idea.md"}
+        S0_HAS_PLAN["有 确认方案"]
+        S0_HAS_IDEA["有 idea.md<br/>无确认方案"]
+        S0_HAS_DIR["仅目录存在"]
+        S0_NEW["全新功能<br/>推导版本号+目录名<br/>用户确认"]
+    end
+
+    subgraph S1["Step 1  建立项目上下文"]
+        S1_DO["并行调研:<br/>MEMORY.md 经验<br/>docs/ 设计文档<br/>代码相似实现"]
+    end
+
+    subgraph S2["Step 2  创建需求文档"]
+        S2_DO["写入 idea.md<br/>核心需求 / 调研上下文<br/>范围边界 / 初步理解"]
+    end
+
+    subgraph S3["Step 3  互动确认方案  ← 唯一需要用户参与"]
+        S3_QA["与用户 Q&A<br/>每轮 ≤6 问<br/>软上限 5 轮"]
+        S3_SUMMARY["输出方案摘要:<br/>锁定决策 + 待细化 + 验收标准"]
+        S3_OK{"用户确认?"}
+        S3_SAVE["追加 确认方案 到 idea.md"]
+    end
+
+    subgraph S35["Step 3.5  技术可行性快检  ≤120s"]
+        S35_DO["从锁定决策提取假设<br/>并行验证 grep/go.mod/Excel"]
+        S35_R{"结果?"}
+        S35_BLOCK{"BLOCK 分级"}
+        S35_A["简单缺失 ≤50行<br/>纳入 plan"]
+        S35_B["独立系统 >300行<br/>当场 DDRP spawn"]
+        S35_C{"顶层/子?"}
+        S35_TOP["顶层: 报告用户"]
+        S35_SUB["子feature: 降级继续"]
+    end
+
+    GOTO4(["进入 Step 4 实现"])
+
+    START --> S0_CHECK
+    S0_CHECK -->|"确认方案 存在"| S0_HAS_PLAN
+    S0_CHECK -->|"idea.md 存在"| S0_HAS_IDEA
+    S0_CHECK -->|"仅目录"| S0_HAS_DIR
+    S0_CHECK -->|"均不存在"| S0_NEW
+
+    S0_HAS_PLAN ==>|"跳到 Step 4"| GOTO4
+    S0_HAS_IDEA -->|"跳到 Step 3"| S3_QA
+    S0_HAS_DIR --> S1_DO
+    S0_NEW --> S1_DO
+
+    S1_DO --> S2_DO
+    S2_DO --> S3_QA
+
+    S3_QA --> S3_SUMMARY --> S3_OK
+    S3_OK -->|"调整"| S3_QA
+    S3_OK -->|"确认"| S3_SAVE
+
+    S3_SAVE --> S35_DO --> S35_R
+    S35_R -->|"PASS / WARN"| GOTO4
+    S35_R -->|"BLOCK"| S35_BLOCK
+    S35_BLOCK -->|"简单"| S35_A --> GOTO4
+    S35_BLOCK -->|"独立系统"| S35_B --> GOTO4
+    S35_BLOCK -->|"无法解决"| S35_C
+    S35_C -->|"顶层"| S35_TOP --> S3_QA
+    S35_C -->|"子feature"| S35_SUB --> GOTO4
+
+    classDef green fill:#c8e6c9,stroke:#388e3c,color:#1b5e20
+    classDef blue fill:#bbdefb,stroke:#1976d2,color:#0d47a1
+    classDef orange fill:#ffe0b2,stroke:#f57c00,color:#e65100
+    classDef pink fill:#f8bbd0,stroke:#c2185b,color:#880e4f
+    classDef purple fill:#e1bee7,stroke:#7b1fa2,color:#4a148c
+    classDef go fill:#b2dfdb,stroke:#00796b,color:#004d40
+
+    class S0_CHECK,S0_HAS_PLAN,S0_HAS_IDEA,S0_HAS_DIR,S0_NEW green
+    class S1_DO blue
+    class S2_DO orange
+    class S3_QA,S3_SUMMARY,S3_OK,S3_SAVE pink
+    class S35_DO,S35_R,S35_BLOCK,S35_A,S35_B,S35_C,S35_TOP,S35_SUB purple
+    class GOTO4 go
